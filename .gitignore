@@ -1,19 +1,7 @@
-# Entorno virtual
-.venv/
-
-# Variables de entorno
 .env
-
-# Archivos temporales de Python
+.venv/
+.cache/
 __pycache__/
 *.pyc
-*.pyo
-
-# VS Code
-.vscode/
-
-# Sistema operativo
-.DS_Store
-Thumbs.db
-# Embeddings derivados locales (no versionar datos biométricos)
-.cache/
+*.log
+informes/

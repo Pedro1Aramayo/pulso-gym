@@ -6,7 +6,6 @@ from pathlib import Path
 
 import cv2
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal, Slot
-from src.database.conexion import procesar_asistencia
 
 
 class TrabajadorReconocimiento(QObject):
@@ -61,13 +60,6 @@ class TrabajadorReconocimiento(QObject):
         try:
             if trabajo["cancelacion"].is_set() and trabajo["tipo"] != "preparar":
                 self.completar({"error": True, "mensaje": "Operación cancelada."})
-                return
-            if trabajo["tipo"] == "asistencia":
-                asistencia = procesar_asistencia(
-                    trabajo["resultado"]["alumno_id"], trabajo["jornada_id"],
-                    cancelacion=trabajo["cancelacion"]
-                )
-                self.completar({"resultado": trabajo["resultado"], "asistencia": asistencia})
                 return
             solicitud = {"tipo": trabajo["tipo"]}
             if trabajo["tipo"] == "reconocer":
@@ -134,7 +126,7 @@ class TrabajadorReconocimiento(QObject):
         if trabajo is not None:
             self.terminado.emit({
                 "tipo": trabajo["tipo"], "sesion": trabajo["sesion"],
-                "jornada_id": trabajo["jornada_id"], **datos,
+                **datos,
             })
 
     @Slot()

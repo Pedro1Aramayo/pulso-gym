@@ -153,11 +153,11 @@ class ReconocedorFacial:
             with conexion.cursor(name="referencias_faciales") as cursor:
                 cursor.itersize = 1
                 cursor.execute("""
-                    SELECT f.id, f.alumno_id, a.nombre, a.apellido, f.angulo, f.imagen
-                    FROM foto_alumno f INNER JOIN alumno a ON a.id=f.alumno_id
-                    ORDER BY f.alumno_id, f.id
+                    SELECT f.id, f.socio_id, a.nombre, a.apellido, f.angulo, f.imagen
+                    FROM foto_socio f INNER JOIN socio a ON a.id=f.socio_id
+                    ORDER BY f.socio_id, f.id
                 """)
-                for foto_id, alumno_id, nombre, apellido, angulo, datos in cursor:
+                for foto_id, socio_id, nombre, apellido, angulo, datos in cursor:
                     clave = hashlib.sha256(bytes(datos)).hexdigest()
                     embedding = None
                     if clave in cache:
@@ -187,7 +187,7 @@ class ReconocedorFacial:
                             continue
                     nuevos[clave] = embedding.tolist()
                     referencias.append({
-                        "foto_id": foto_id, "alumno_id": alumno_id,
+                        "foto_id": foto_id, "socio_id": socio_id,
                         "nombre": nombre, "apellido": apellido, "angulo": angulo,
                         "embedding": embedding,
                     })
@@ -351,8 +351,8 @@ class ReconocedorFacial:
 
             return {
                 "estado": "reconocido",
-                "alumno_id":
-                    mejor_referencia["alumno_id"],
+                "socio_id":
+                    mejor_referencia["socio_id"],
                 "nombre":
                     mejor_referencia["nombre"],
                 "apellido":

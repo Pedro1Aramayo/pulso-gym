@@ -1,18 +1,23 @@
+name: asistencia-gimnasio
 services:
   db:
     image: postgres:16
-    container_name: asistencia_facial_db
     restart: unless-stopped
-
-    env_file:
-      - .env
-
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-asistencia_gimnasio}
+      POSTGRES_USER: ${POSTGRES_USER:-gimnasio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Configure POSTGRES_PASSWORD en .env}
+      TZ: America/Argentina/Buenos_Aires
     ports:
-      - "${POSTGRES_PORT}:5432"
-
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./database/initdb:/docker-entrypoint-initdb.d
-
+      - gimnasio_pgdata:/var/lib/postgresql/data
+      - ./database/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 volumes:
-  postgres_data:
+  gimnasio_pgdata:
+    name: asistencia-gimnasio_pgdata

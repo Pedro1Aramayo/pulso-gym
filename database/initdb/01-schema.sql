@@ -1,77 +1,56 @@
-CREATE TABLE "usuario"(
-    "id" SERIAL NOT NULL,
-    "nombre_usuario" VARCHAR(255) NOT NULL,
-    "correo_electronico" VARCHAR(255) NULL,
-    "dni" VARCHAR(255) NULL,
-    "cuil" VARCHAR(255) NULL,
-    "contrasenia" VARCHAR(255) NOT NULL
+-- Contexto B: identidad, membresías y accesos. Base independiente.
+CREATE TABLE socio (
+    id SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,
+    apellido VARCHAR(100) NOT NULL,
+    dni VARCHAR(20) NOT NULL UNIQUE,
+    celular VARCHAR(40) NOT NULL DEFAULT '',
+    correo_electronico VARCHAR(200) NOT NULL DEFAULT '',
+    activo BOOLEAN NOT NULL DEFAULT TRUE,
+    creado_en TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-ALTER TABLE
-    "usuario" ADD PRIMARY KEY("id");
-ALTER TABLE
-    "usuario" ADD CONSTRAINT "usuario_nombre_usuario_unique" UNIQUE("nombre_usuario");
-ALTER TABLE
-    "usuario" ADD CONSTRAINT "usuario_correo_electronico_unique" UNIQUE("correo_electronico");
-ALTER TABLE
-    "usuario" ADD CONSTRAINT "usuario_dni_unique" UNIQUE("dni");
-ALTER TABLE
-    "usuario" ADD CONSTRAINT "usuario_cuil_unique" UNIQUE("cuil");
-CREATE TABLE "alumno"(
-    "id" SERIAL NOT NULL,
-    "nombre" VARCHAR(255) NOT NULL,
-    "apellido" VARCHAR(255) NOT NULL,
-    "dni" VARCHAR(255) NOT NULL,
-    "carrera" VARCHAR(255) NOT NULL,
-    "celular" VARCHAR(255) NOT NULL,
-    "correo_electronico" VARCHAR(255) NOT NULL,
-    "fecha_nacimiento" DATE NOT NULL,
-    "anio_ingreso" INTEGER NOT NULL,
-    "domicilio" VARCHAR(255) NOT NULL,
-    "libreta" VARCHAR(255) NOT NULL
+CREATE TABLE foto_socio (
+    id SERIAL PRIMARY KEY,
+    socio_id INTEGER NOT NULL REFERENCES socio(id),
+    angulo VARCHAR(20) NOT NULL CHECK (angulo IN ('frontal','izquierdo','derecho')),
+    imagen BYTEA NOT NULL,
+    UNIQUE(socio_id, angulo)
 );
-ALTER TABLE
-    "alumno" ADD PRIMARY KEY("id");
-ALTER TABLE
-    "alumno" ADD CONSTRAINT "alumno_dni_unique" UNIQUE("dni");
-ALTER TABLE
-    "alumno" ADD CONSTRAINT "alumno_correo_electronico_unique" UNIQUE("correo_electronico");
-ALTER TABLE
-    "alumno" ADD CONSTRAINT "alumno_libreta_unique" UNIQUE("libreta");
-CREATE TABLE "foto_alumno"(
-    "id" SERIAL NOT NULL,
-    "alumno_id" INTEGER NOT NULL,
-    "angulo" VARCHAR(255) CHECK
-        ("angulo" IN('frontal','izquierdo','derecho')) NOT NULL,
-        "imagen" bytea NOT NULL
+CREATE TABLE plan (
+    id SERIAL PRIMARY KEY,
+    nombre VARCHAR(80) NOT NULL UNIQUE,
+    cupo INTEGER CHECK (cupo > 0),
+    una_vez_dia BOOLEAN NOT NULL DEFAULT FALSE
 );
-ALTER TABLE
-    "foto_alumno" ADD PRIMARY KEY("id");
-CREATE TABLE "jornada"(
-    "id" SERIAL NOT NULL,
-    "fecha" DATE NOT NULL,
-    "horario_salida" TIME(0) WITHOUT TIME ZONE NOT NULL,
-    "horario_entrada" TIME(0) WITHOUT TIME ZONE NOT NULL,
-    "usuario_id" INTEGER NOT NULL,
-    "catedra" VARCHAR(150) NULL
+INSERT INTO plan(nombre,cupo,una_vez_dia) VALUES
+('2 veces por semana',8,FALSE), ('3 veces por semana',12,FALSE),
+('5 veces por semana',20,FALSE), ('Todos los días',NULL,TRUE),
+('Pase libre',NULL,FALSE);
+CREATE TABLE membresia (
+    id SERIAL PRIMARY KEY,
+    socio_id INTEGER NOT NULL REFERENCES socio(id),
+    plan_id INTEGER NOT NULL REFERENCES plan(id),
+    inicio DATE NOT NULL,
+    vence DATE NOT NULL CHECK (vence > inicio),
+    cerrada_en TIMESTAMPTZ,
+    pagado_en TIMESTAMPTZ NOT NULL DEFAULT now(),
+    importe NUMERIC(12,2) NOT NULL CHECK (importe >= 0)
 );
-ALTER TABLE
-    "jornada" ADD PRIMARY KEY("id");
-CREATE TABLE "asistencia"(
-    "id" SERIAL NOT NULL,
-    "alumno_id" INTEGER NOT NULL,
-    "entrada" TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL,
-    "salida" TIMESTAMP(0) WITHOUT TIME ZONE NULL,
-    "jornada_id" INTEGER NOT NULL
+-- La renovación anticipada cierra el período anterior, sin borrar su historial.
+CREATE UNIQUE INDEX una_membresia_abierta ON membresia(socio_id) WHERE cerrada_en IS NULL;
+CREATE TABLE horario (
+    id SERIAL PRIMARY KEY,
+    dia INTEGER NOT NULL CHECK (dia BETWEEN 0 AND 6),
+    abre TIME NOT NULL,
+    cierra TIME NOT NULL CHECK (cierra > abre),
+    UNIQUE(dia, abre, cierra)
 );
-ALTER TABLE
-    "asistencia" ADD PRIMARY KEY("id");
-ALTER TABLE
-    "asistencia" ADD CONSTRAINT "asistencia_jornada_alumno_unique" UNIQUE("jornada_id", "alumno_id");
-ALTER TABLE
-    "asistencia" ADD CONSTRAINT "asistencia_alumno_id_foreign" FOREIGN KEY("alumno_id") REFERENCES "alumno"("id");
-ALTER TABLE
-    "jornada" ADD CONSTRAINT "jornada_usuario_id_foreign" FOREIGN KEY("usuario_id") REFERENCES "usuario"("id");
-ALTER TABLE
-    "asistencia" ADD CONSTRAINT "asistencia_jornada_id_foreign" FOREIGN KEY("jornada_id") REFERENCES "jornada"("id");
-ALTER TABLE
-    "foto_alumno" ADD CONSTRAINT "foto_alumno_alumno_id_foreign" FOREIGN KEY("alumno_id") REFERENCES "alumno"("id");
+-- Configuración inicial editable: lunes a viernes, 07:00 a 22:00.
+INSERT INTO horario(dia,abre,cierra) SELECT d, '07:00'::time, '22:00'::time FROM generate_series(0,4) d;
+CREATE TABLE ingreso (
+    id BIGSERIAL PRIMARY KEY,
+    membresia_id INTEGER NOT NULL REFERENCES membresia(id),
+    instante TIMESTAMPTZ NOT NULL DEFAULT now(),
+    solicitud UUID NOT NULL UNIQUE
+);
+CREATE INDEX ingreso_membresia_fecha ON ingreso(membresia_id,instante);
