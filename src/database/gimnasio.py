@@ -92,11 +92,12 @@ def _consultar(c, socio_id, ahora):
     ultimo = None
     if m:
         inicio_dia = datetime.combine(ahora.date(), time.min, ahora.tzinfo)
-        c.execute("""SELECT count(*) AS usados,
-            count(*) FILTER (WHERE instante >= %s AND instante < %s) AS hoy
-            FROM ingreso WHERE membresia_id=%s""", (inicio_dia,inicio_dia+timedelta(days=1),m['id']))
-        r = c.fetchone()
-        usados,hoy = r['usados'],r['hoy']
+        c.execute('SELECT count(*) AS usados FROM ingreso WHERE membresia_id=%s', (m['id'],))
+        usados = c.fetchone()['usados']
+        c.execute("""SELECT count(*) AS hoy FROM ingreso i JOIN membresia m ON m.id=i.membresia_id
+                     WHERE m.socio_id=%s AND i.instante >= %s AND i.instante < %s""",
+                  (socio_id,inicio_dia,inicio_dia+timedelta(days=1)))
+        hoy = c.fetchone()['hoy']
     # Antirrebote del socio, incluso si renovó entre dos lecturas.
     c.execute("""SELECT max(i.instante) AS ultimo FROM ingreso i
                  JOIN membresia m ON m.id=i.membresia_id WHERE m.socio_id=%s""", (socio_id,))

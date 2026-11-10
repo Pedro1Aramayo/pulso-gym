@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800">
+<rect width="1280" height="800" fill="#101c2b"/>
+<g font-family="Segoe UI,Arial,sans-serif"><text x="40" y="45" fill="#b8f34a" font-size="27" font-weight="bold">PULSO GYM · Modelo de datos</text>
+<text x="40" y="75" fill="#afc0d4" font-size="16">PostgreSQL · Contexto B · PK: clave primaria / FK: clave foránea / UK: unicidad</text>
+<rect x="40" y="100" width="300" height="239" rx="10" fill="#1b2d42" stroke="#496079"/>
+<text x="58" y="133" fill="#b8f34a" font-size="20" font-weight="bold">SOCIO</text>
+<text x="58" y="169" fill="#e7eef6" font-size="15">PK  id : serial</text>
+<text x="58" y="198" fill="#e7eef6" font-size="15">nombre, apellido : varchar</text>
+<text x="58" y="227" fill="#e7eef6" font-size="15">UK  dni : varchar</text>
+<text x="58" y="256" fill="#e7eef6" font-size="15">celular, correo_electronico</text>
+<text x="58" y="285" fill="#e7eef6" font-size="15">activo : boolean</text>
+<text x="58" y="314" fill="#e7eef6" font-size="15">creado_en : timestamptz</text>
+<rect x="40" y="450" width="300" height="210" rx="10" fill="#1b2d42" stroke="#496079"/>
+<text x="58" y="483" fill="#b8f34a" font-size="20" font-weight="bold">FOTO_SOCIO</text>
+<text x="58" y="519" fill="#e7eef6" font-size="15">PK  id : serial</text>
+<text x="58" y="548" fill="#e7eef6" font-size="15">FK  socio_id → socio.id</text>
+<text x="58" y="577" fill="#e7eef6" font-size="15">angulo : varchar</text>
+<text x="58" y="606" fill="#e7eef6" font-size="15">imagen : bytea</text>
+<text x="58" y="635" fill="#e7eef6" font-size="15">UK  (socio_id, angulo)</text>
+<rect x="460" y="100" width="330" height="268" rx="10" fill="#1b2d42" stroke="#496079"/>
+<text x="478" y="133" fill="#b8f34a" font-size="20" font-weight="bold">MEMBRESIA</text>
+<text x="478" y="169" fill="#e7eef6" font-size="15">PK  id : serial</text>
+<text x="478" y="198" fill="#e7eef6" font-size="15">FK  socio_id → socio.id</text>
+<text x="478" y="227" fill="#e7eef6" font-size="15">FK  plan_id → plan.id</text>
+<text x="478" y="256" fill="#e7eef6" font-size="15">inicio, vence : date</text>
+<text x="478" y="285" fill="#e7eef6" font-size="15">cerrada_en : timestamptz NULL</text>
+<text x="478" y="314" fill="#e7eef6" font-size="15">pagado_en : timestamptz</text>
+<text x="478" y="343" fill="#e7eef6" font-size="15">importe : numeric(12,2)</text>
+<rect x="930" y="100" width="300" height="181" rx="10" fill="#1b2d42" stroke="#496079"/>
+<text x="948" y="133" fill="#b8f34a" font-size="20" font-weight="bold">PLAN</text>
+<text x="948" y="169" fill="#e7eef6" font-size="15">PK  id : serial</text>
+<text x="948" y="198" fill="#e7eef6" font-size="15">UK  nombre : varchar</text>
+<text x="948" y="227" fill="#e7eef6" font-size="15">cupo : integer NULL</text>
+<text x="948" y="256" fill="#e7eef6" font-size="15">una_vez_dia : boolean</text>
+<rect x="460" y="450" width="330" height="181" rx="10" fill="#1b2d42" stroke="#496079"/>
+<text x="478" y="483" fill="#b8f34a" font-size="20" font-weight="bold">INGRESO</text>
+<text x="478" y="519" fill="#e7eef6" font-size="15">PK  id : bigserial</text>
+<text x="478" y="548" fill="#e7eef6" font-size="15">FK  membresia_id → membresia.id</text>
+<text x="478" y="577" fill="#e7eef6" font-size="15">instante : timestamptz</text>
+<text x="478" y="606" fill="#e7eef6" font-size="15">UK  solicitud : uuid</text>
+<rect x="930" y="450" width="300" height="210" rx="10" fill="#1b2d42" stroke="#496079"/>
+<text x="948" y="483" fill="#b8f34a" font-size="20" font-weight="bold">HORARIO</text>
+<text x="948" y="519" fill="#e7eef6" font-size="15">PK  id : serial</text>
+<text x="948" y="548" fill="#e7eef6" font-size="15">dia : integer [0..6]</text>
+<text x="948" y="577" fill="#e7eef6" font-size="15">abre, cierra : time</text>
+<text x="948" y="606" fill="#e7eef6" font-size="15">UK  (dia, abre, cierra)</text>
+<text x="948" y="635" fill="#e7eef6" font-size="15">Configuración global</text>
+<path d="M340 185 H460" stroke="#b8f34a" stroke-width="2" fill="none"/><text x="380" y="175" fill="#b8f34a" font-size="15">1 : N</text>
+<path d="M930 185 H790" stroke="#b8f34a" stroke-width="2" fill="none"/><text x="840" y="175" fill="#b8f34a" font-size="15">1 : N</text>
+<path d="M190 339 V450" stroke="#b8f34a" stroke-width="2" fill="none"/><text x="202" y="405" fill="#b8f34a" font-size="15">1 : N</text>
+<path d="M620 368 V450" stroke="#b8f34a" stroke-width="2" fill="none"/><text x="632" y="412" fill="#b8f34a" font-size="15">1 : N</text>
+<text x="40" y="740" fill="#afc0d4" font-size="16">Un período abierto por socio · Vigencia [inicio, vence) · Cupos calculados desde ingresos confirmados</text>
+<text x="40" y="770" fill="#afc0d4" font-size="15">Fuente del esquema: database/initdb/01-schema.sql · Diagrama local para importar y revisar en DrawSQL</text></g></svg>

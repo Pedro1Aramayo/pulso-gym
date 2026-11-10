@@ -1,0 +1,18 @@
+PULSO GYM - Trabajo Final de Reconocimiento Visual
+
+1. Extrae TODO el ZIP en una carpeta.
+2. Abre README.md para leer los requisitos e instrucciones.
+3. Con Python 3.12 y Docker Desktop instalados, ejecuta instalar.bat.
+4. Edita la contraseña del nuevo .env, abre Docker Desktop y ejecuta iniciar.bat.
+5. Registra un socio, sus tres fotos y un pago. Configura el horario y abre la cámara.
+
+Contenido:
+- Código completo adaptado al gimnasio.
+- Base PostgreSQL nueva, separada del sistema escolar.
+- Membresías, cupos, horarios, confirmación e informes.
+- DER.svg, análisis, guía de defensa y pruebas en docs/ y tests/.
+- historial.bundle para restaurar las ramas Git de la copia local.
+
+Todavía debes publicar tu rama en GitHub, guardar el DER en DrawSQL y realizar
+la prueba con tu rostro y webcam. No se publicaron archivos en tus cuentas.
+La base y el proyecto originales no se modificaron.
