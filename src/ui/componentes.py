@@ -1,5 +1,5 @@
 """Widgets reutilizables del diseño PULSO GYM."""
-from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QHeaderView, QLabel,
                                QPushButton, QSizePolicy, QTableWidget, QVBoxLayout, QWidget)
@@ -246,6 +246,20 @@ def tabla(columnas, estirar=None):
     h.setSectionResizeMode(QHeaderView.ResizeToContents)
     h.setSectionResizeMode(estirar if estirar is not None else len(columnas) - 1, QHeaderView.Stretch)
     return t
+
+
+class ColumnasOpcionales(QObject):
+    """Oculta columnas secundarias cuando la tabla es angosta, para no truncar los nombres."""
+    def __init__(self, tabla, columnas, ancho_minimo):
+        super().__init__(tabla)
+        self.tabla, self.columnas, self.ancho = tabla, columnas, ancho_minimo
+        tabla.installEventFilter(self)
+
+    def eventFilter(self, objeto, evento):
+        if evento.type() == QEvent.Resize:
+            for c in self.columnas:
+                self.tabla.setColumnHidden(c, self.tabla.width() < self.ancho)
+        return False
 
 
 def fijar_ancho(t, columna, ancho):

@@ -51,11 +51,19 @@ class Dialogo(QDialog):
         t = etiqueta(titulo, 'tituloTarjeta')
         t.setStyleSheet('font-size: 20px;')
         col.addWidget(t)
-        if subtitulo:
-            col.addWidget(etiqueta(subtitulo, 'tenue', ajuste=True))
+        self._subtitulo = etiqueta(subtitulo, 'tenue', ajuste=True) if subtitulo else None
+        if self._subtitulo:
+            col.addWidget(self._subtitulo)
         cab.addLayout(col, 1)
         self.cuerpo.addLayout(cab)
         self.cuerpo.addWidget(separador())
+
+    def showEvent(self, evento):
+        # Los QLabel con ajuste no informan su alto real al calcular el tamaño mínimo del diálogo.
+        if self._subtitulo:
+            self._subtitulo.setMinimumHeight(self._subtitulo.heightForWidth(self._subtitulo.width()))
+            self.adjustSize()
+        super().showEvent(evento)
 
     def botonera(self, texto_ok, al_ok, icono='check'):
         fila = QHBoxLayout()

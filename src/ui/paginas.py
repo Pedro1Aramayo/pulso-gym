@@ -11,7 +11,7 @@ from src.domain import presentacion as fmt
 from src.domain.reglas import ahora_local, un_mes
 from src.reports.gimnasio import exportar
 from src.ui import iconos, tema
-from src.ui.componentes import (Avatar, BarraProgreso, Barras, Insignia, Kpi, Tarjeta, boton, celda_insignia,
+from src.ui.componentes import (Avatar, BarraProgreso, Barras, ColumnasOpcionales, Insignia, Kpi, Tarjeta, boton, celda_insignia,
                                 etiqueta, fijar_ancho, separador, tabla)
 from src.ui.dialogos import DialogoHistorial, DialogoSocio, preguntar
 
@@ -120,6 +120,7 @@ class PaginaSocios(Pagina):
         barra.addWidget(boton('Nuevo socio', 'mas', 'primario', al_click=lambda: self.v.intentar(self.nuevo)))
         lista.cuerpo.addLayout(barra)
         self.tabla = tabla(['', 'Socio', 'N.º', 'DNI', 'Plan', 'Vence', 'Estado'], estirar=1)
+        ColumnasOpcionales(self.tabla, [2, 3], 780)
         fijar_ancho(self.tabla, 0, 60)
         fijar_ancho(self.tabla, 6, 132)
         self.tabla.itemSelectionChanged.connect(self.seleccionar)
@@ -311,6 +312,7 @@ class PaginaMembresias(Pagina):
         barra.addWidget(self.busqueda)
         lista.cuerpo.addLayout(barra)
         self.tabla = tabla(['Socio', 'Plan', 'Inicio', 'Vence', 'Uso del mes', 'Estado'], estirar=0)
+        ColumnasOpcionales(self.tabla, [1, 2], 820)
         fijar_ancho(self.tabla, 4, 170)
         fijar_ancho(self.tabla, 5, 132)
         self.tabla.itemSelectionChanged.connect(self.elegir_de_tabla)

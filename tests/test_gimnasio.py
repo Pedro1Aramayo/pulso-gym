@@ -185,6 +185,8 @@ class PresentacionTest(unittest.TestCase):
         self.assertIsNone(variacion(5,0)); self.assertEqual(variacion(112,100),12); self.assertEqual(variacion(50,100),-50)
 
     def test_restantes_por_tipo_de_plan(self):
+        from src.domain.presentacion import texto_restantes as tr
+        self.assertEqual(tr({'cupo': 8}, None), '—')
         from src.domain.presentacion import texto_restantes
         self.assertEqual(texto_restantes({'cupo':12,'una_vez_dia':False},3),'3 de 12')
         self.assertEqual(texto_restantes({'cupo':None,'una_vez_dia':True},None),'1 por día')

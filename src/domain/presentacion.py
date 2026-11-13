@@ -55,7 +55,7 @@ def texto_restantes(membresia, restantes):
     if not membresia:
         return '—'
     if membresia.get('cupo'):
-        return f"{restantes} de {membresia['cupo']}"
+        return '—' if restantes is None else f"{restantes} de {membresia['cupo']}"
     return '1 por día' if membresia.get('una_vez_dia') else 'Ilimitados'
 
 

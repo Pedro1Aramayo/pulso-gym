@@ -18,22 +18,35 @@ Identidad ficticia: PULSO GYM.
 
 La aplicación es de escritorio, no una página web ni un ejecutable sin instalación. No incluye personas, fotografías, pagos, contraseñas reales, modelos descargados ni la carpeta `.venv`.
 
-### Inicio manual en PowerShell
+### Windows 11 desde Visual Studio Code
+
+Requisitos: Windows 11 de 64 bits, **Python 3.12 de 64 bits** (marcar «Add python.exe to PATH»), **Git**, **Docker Desktop** abierto y en estado *running*, Visual Studio Code con la extensión Python, una webcam y pantalla de al menos **1360×780** (la ventana no se reduce por debajo de ese tamaño; se recomienda maximizarla).
+
+En una terminal de VS Code (PowerShell), la primera vez:
 
 ```powershell
+git clone https://github.com/Pedro1Aramayo/pulso-gym.git C:\proyectos\pulso-gym
+cd C:\proyectos\pulso-gym
+git switch devin/1794574039-rediseno-profesional
+code -r .
 py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 Copy-Item .env.example .env
-# Editar .env antes de continuar.
+notepad .env   # reemplazar POSTGRES_PASSWORD antes del primer inicio de la base
 docker compose up -d --wait
 .\.venv\Scripts\python.exe main.py
 ```
+
+Las veces siguientes: `docker compose up -d --wait` y `.\.venv\Scripts\python.exe main.py` (o `iniciar.bat`). En VS Code, elegir el intérprete con Ctrl+Shift+P → «Python: Select Interpreter» → `.venv`. Si PowerShell bloquea scripts, no hace falta activar el entorno: los comandos usan `.venv\Scripts\python.exe` directamente.
+
+Webcam: en Configuración de Windows → Privacidad y seguridad → Cámara, habilitar «Permitir que las aplicaciones de escritorio accedan a la cámara». En la app, **Configurar cámara** → **Buscar cámaras** y elegir el índice detectado; cerrar Zoom/Teams/Cámara si la imagen no aparece. La primera apertura descarga los pesos de FaceNet512 (requiere Internet y puede demorar).
 
 Si `.env` ya existe, no repetir `Copy-Item`. Para detener únicamente esta base: `docker compose stop` desde esta carpeta. No borrar volúmenes del proyecto original.
 
 ## Interfaz
 
-Tema oscuro con acento verde lima, barra lateral con iconos y cinco secciones. Todos los valores (KPIs, últimos accesos, gráficos, cupos) se calculan desde PostgreSQL; la aplicación no incluye datos de ejemplo. Las capturas de `docs/capturas/` se tomaron con socios de prueba en una base local y rostros sintéticos generados por IA (no son personas reales).
+Tema oscuro con acento verde lima, barra lateral con iconos y cinco secciones. Todos los valores (KPIs, últimos accesos, gráficos, cupos) se calculan desde PostgreSQL; la aplicación no incluye datos de ejemplo. Las capturas de `docs/capturas/` se tomaron con socios de prueba en una base local y rostros sintéticos generados por IA (no son personas reales), usando un video como cámara simulada: no constituyen una validación con webcam física.
 
 | Pantalla | Contenido |
 |---|---|
@@ -45,7 +58,7 @@ Tema oscuro con acento verde lima, barra lateral con iconos y cinco secciones. T
 
 **Configuración de cámara** (en Acceso facial o en el menú *Recepción*) permite elegir la webcam por índice, un archivo de video o una URL; el valor se recuerda en el equipo y tiene prioridad sobre `CAMERA_INDEX`.
 
-![Acceso facial](docs/capturas/01-acceso-socio-reconocido.png)
+![Acceso facial](docs/capturas/01-socio-reconocido.png)
 
 ## Qué se implementó
 
