@@ -14,7 +14,7 @@ Identidad ficticia: PULSO GYM.
 6. En **Socios**, registrar una persona con DNI y tres fotos. En **Membresías y pagos**, registrar su pago y plan.
 7. Revisar **Horarios**: inicialmente lunes a viernes de 07:00 a 22:00; sábado y domingo cerrados.
 8. En **Acceso facial**, abrir la cámara. La primera inicialización de FaceNet512 puede descargar sus pesos y demorar. Revisar la terminal si falla; al terminar la descarga, volver a abrir la cámara.
-9. Mirar a la cámara, revisar la identidad propuesta y elegir **OK** o **Cancelar**.
+9. Mirar a la cámara, revisar en el panel **Socio reconocido** la foto, el plan y el vencimiento, y elegir **Confirmar ingreso** (Enter) o **Cancelar** (Esc). Si nadie confirma en 45 segundos, se cancela sin registrar.
 
 La aplicación es de escritorio, no una página web ni un ejecutable sin instalación. No incluye personas, fotografías, pagos, contraseñas reales, modelos descargados ni la carpeta `.venv`.
 
@@ -31,18 +31,34 @@ docker compose up -d --wait
 
 Si `.env` ya existe, no repetir `Copy-Item`. Para detener únicamente esta base: `docker compose stop` desde esta carpeta. No borrar volúmenes del proyecto original.
 
+## Interfaz
+
+Tema oscuro con acento verde lima, barra lateral con iconos y cinco secciones. Todos los valores (KPIs, últimos accesos, gráficos, cupos) se calculan desde PostgreSQL; la aplicación no incluye datos de ejemplo. Las capturas de `docs/capturas/` se tomaron con socios de prueba en una base local y rostros sintéticos generados por IA (no son personas reales).
+
+| Pantalla | Contenido |
+|---|---|
+| Acceso facial | Ingresos de hoy (con variación contra el mismo día de la semana anterior), socios activos, vencimientos del día, estado de la cámara, video con marco del rostro, socio reconocido con foto frontal, plan, ingresos restantes y vencimiento, confirmación/cancelación y últimos accesos |
+| Socios | Búsqueda y filtros, ficha con foto y datos, alta y edición de datos o fotografías, historial de pagos y activación/desactivación |
+| Membresías y pagos | Recaudación del mes, vigentes, por vencer y vencidas; registro de pago con aviso de renovación anticipada; uso del cupo por socio |
+| Horarios y cupos | Estado abierto/cerrado, horas semanales, franjas por día y socios vigentes por plan |
+| Informes | Rangos rápidos, ingresos por día, por hora y por plan, detalle y exportación Excel/PDF |
+
+**Configuración de cámara** (en Acceso facial o en el menú *Recepción*) permite elegir la webcam por índice, un archivo de video o una URL; el valor se recuerda en el equipo y tiene prioridad sobre `CAMERA_INDEX`.
+
+![Acceso facial](docs/capturas/01-acceso-socio-reconocido.png)
+
 ## Qué se implementó
 
 | Área | Funcionalidad |
 |---|---|
 | Identificación | OpenCV + Haar Cascade + DeepFace/FaceNet512 reutilizados del proyecto original; inferencia en proceso separado |
-| Socios | Alta, tres fotografías, DNI único y activación/desactivación |
+| Socios | Alta, edición de datos y fotos, tres fotografías validadas (un rostro por foto), DNI único y activación/desactivación |
 | Membresías | Pago, renovación, cambio de plan, historial de períodos y vigencia por mes calendario |
 | Planes con cupo | 8, 12 o 20 ingresos por período, distribuidos libremente |
 | Todos los días | Un ingreso por día local, incluso si se renueva durante ese día |
 | Pase libre | Varios ingresos diarios; protección contra lecturas repetidas de 30 segundos |
 | Horarios | Configuración por día, varios turnos y días cerrados; rechazo de superposiciones |
-| Confirmación | Consulta sin escritura, modal OK/Cancelar, cámara abierta y nuevas inferencias pausadas |
+| Confirmación | Consulta sin escritura, panel con Confirmar/Cancelar (Enter/Esc, 45 s), cámara abierta y nuevas inferencias pausadas |
 | Persistencia | PostgreSQL independiente; revalidación y bloqueo transaccional al confirmar |
 | Informes | Historial por socio/fechas, estado actual, usados y restantes; Excel y PDF |
 
@@ -91,7 +107,7 @@ $env:TEST_POSTGRES='1'
 Remove-Item Env:TEST_POSTGRES
 ```
 
-Las pruebas de base crean un esquema de nombre aleatorio, lo prueban y eliminan únicamente ese esquema. No borran tablas existentes. Sin `TEST_POSTGRES=1`, las siete pruebas de base se omiten explícitamente.
+Las pruebas de base crean un esquema de nombre aleatorio, lo prueban y eliminan únicamente ese esquema. No borran tablas existentes. Sin `TEST_POSTGRES=1`, las diez pruebas de base se omiten explícitamente.
 
 Ver `docs/VALIDACION.md` para los resultados reales y las verificaciones todavía manuales.
 
@@ -115,7 +131,7 @@ Si el docente exige la rama dentro de tu repositorio original, partir de su `mai
 
 - **Docker no responde:** abrir Docker Desktop y esperar a que termine su inicio.
 - **Puerto ocupado:** cambiar `POSTGRES_PORT` en `.env`; se aplica tanto a Docker como a la conexión de Python.
-- **Webcam ocupada:** cerrar otras aplicaciones y cambiar `CAMERA_INDEX` si hay varias cámaras.
+- **Webcam ocupada:** cerrar otras aplicaciones y elegir otra cámara en **Configuración de cámara** (o `CAMERA_INDEX`).
 - **Sin referencias válidas:** usar fotos iluminadas con un único rostro, tamaño suficiente y giro lateral leve; volver a abrir/recargar la cámara después de registrar al socio.
 - **Motor demora o falla:** revisar Internet para la descarga inicial de pesos y el detalle en la terminal. La carga tiene un máximo de tres minutos por intento.
 - **No permite ingresar:** revisar el mensaje, estado del socio, vigencia, saldo y horario del día.
