@@ -32,7 +32,7 @@ def buscador(placeholder):
     campo.setPlaceholderText(placeholder)
     campo.addAction(iconos.icono('buscar', tema.TENUE), QLineEdit.LeadingPosition)
     campo.setClearButtonEnabled(True)
-    campo.setMinimumWidth(260)
+    campo.setMinimumWidth(160)
     return campo
 
 
@@ -127,13 +127,13 @@ class PaginaSocios(Pagina):
         lista.cuerpo.addWidget(self.tabla, 1)
         self.contador = etiqueta('', 'tenue')
         lista.cuerpo.addWidget(self.contador)
-        cuerpo.addWidget(lista, 1)
-        cuerpo.addWidget(self._detalle())
+        cuerpo.addWidget(lista, 2)
+        cuerpo.addWidget(self._detalle(), 1)
         self.lay.addLayout(cuerpo, 1)
 
     def _detalle(self):
         t = Tarjeta('Ficha del socio', margen=20)
-        t.setFixedWidth(380)
+        t.setMinimumWidth(320); t.setMaximumWidth(380)
         cabecera = QHBoxLayout(); cabecera.setSpacing(16)
         self.foto = Avatar(104, circular=False, radio=12)
         self.foto.setFixedSize(104, 104)
@@ -300,13 +300,13 @@ class PaginaMembresias(Pagina):
         self.lay.addLayout(fila_kpis(self.k_recaudado, self.k_vigentes, self.k_por_vencer, self.k_vencidas))
         cuerpo = QHBoxLayout()
         cuerpo.setSpacing(18)
-        cuerpo.addWidget(self._formulario())
+        cuerpo.addWidget(self._formulario(), 1)
         lista = Tarjeta('Estado de membresías', margen=20)
         barra = QHBoxLayout()
         self.filtro, fila = chips(self.FILTROS, self.llenar)
         barra.addLayout(fila); barra.addStretch()
         self.busqueda = buscador('Buscar socio o DNI')
-        self.busqueda.setMinimumWidth(200)
+        self.busqueda.setMinimumWidth(120)
         self.busqueda.textChanged.connect(self.llenar)
         barra.addWidget(self.busqueda)
         lista.cuerpo.addLayout(barra)
@@ -320,12 +320,12 @@ class PaginaMembresias(Pagina):
         self.b_historial = boton('Historial de pagos del socio', 'reloj', al_click=lambda: self.v.intentar(self.historial))
         pie.addWidget(self.b_historial)
         lista.cuerpo.addLayout(pie)
-        cuerpo.addWidget(lista, 1)
+        cuerpo.addWidget(lista, 2)
         self.lay.addLayout(cuerpo, 1)
 
     def _formulario(self):
         t = Tarjeta('Registrar pago', margen=22)
-        t.setFixedWidth(410)
+        t.setMinimumWidth(310); t.setMaximumWidth(410)
         t.cuerpo.setSpacing(8)
         t.cuerpo.addWidget(etiqueta('Socio', 'datoTitulo'))
         self.socio = QComboBox(); self.socio.setEditable(True); self.socio.setInsertPolicy(QComboBox.NoInsert)
@@ -376,6 +376,7 @@ class PaginaMembresias(Pagina):
         for s in activos:
             self.socio.addItem(f"{s['apellido']}, {s['nombre']} · DNI {fmt.dni(s['dni'])}", s['id'])
         self.socio.setCurrentIndex(max(0, self.socio.findData(elegido)) if activos else -1)
+        self.socio.lineEdit().setCursorPosition(0)
         self.socio.blockSignals(False)
         elegido_plan = self.grupo_planes.checkedId()
         for b in self.grupo_planes.buttons():
@@ -384,7 +385,7 @@ class PaginaMembresias(Pagina):
             b = QPushButton(p['nombre'])
             b.setToolTip(fmt.regla_plan(p['cupo'], p['una_vez_dia']))
             b.setObjectName('opcion'); b.setCheckable(True); b.setCursor(Qt.PointingHandCursor)
-            self.grupo_planes.addButton(b, p['id']); self.planes_lay.addWidget(b, i // 2, i % 2)
+            self.grupo_planes.addButton(b, p['id']); self.planes_lay.addWidget(b, i, 0)
         boton_plan = self.grupo_planes.button(elegido_plan) or (self.grupo_planes.buttons() or [None])[0]
         if boton_plan: boton_plan.setChecked(True)
         self.actualizar_resumen()
@@ -510,17 +511,17 @@ class PaginaHorarios(Pagina):
         alta.addWidget(boton('Agregar franja', 'mas', 'primario', al_click=lambda: self.v.intentar(self.agregar)))
         alta.addStretch()
         semana.cuerpo.addLayout(alta)
-        self.grilla = QHBoxLayout(); self.grilla.setSpacing(12)
+        self.grilla = QGridLayout(); self.grilla.setSpacing(12); self._columnas_grilla = 0
         self.columnas = []
         for d in range(7):
-            caja = QFrame(); caja.setObjectName('cajaDato'); caja.setMinimumHeight(220)
+            caja = QFrame(); caja.setObjectName('cajaDato'); caja.setMinimumHeight(150)
             col = QVBoxLayout(caja); col.setContentsMargins(12, 12, 12, 12); col.setSpacing(8)
             titulo = etiqueta(DIAS[d]); titulo.setStyleSheet('font-weight:700; font-size:15px;')
             col.addWidget(titulo)
             resumen = etiqueta('', 'tenue'); col.addWidget(resumen)
             franjas = QVBoxLayout(); franjas.setSpacing(6); col.addLayout(franjas); col.addStretch()
             self.columnas.append((caja, titulo, resumen, franjas))
-            self.grilla.addWidget(caja, 1)
+        self._reubicar_dias()
         semana.cuerpo.addLayout(self.grilla, 1)
         self.lay.addWidget(semana, 3)
         self.cupos = Tarjeta('Cupos por plan', margen=20)
@@ -530,6 +531,20 @@ class PaginaHorarios(Pagina):
         self.cupos_lay = QGridLayout(); self.cupos_lay.setHorizontalSpacing(24); self.cupos_lay.setVerticalSpacing(10)
         self.cupos.cuerpo.addLayout(self.cupos_lay)
         self.lay.addWidget(self.cupos, 2)
+
+    def _reubicar_dias(self):
+        # Siete columnas no entran en ventanas angostas: se pasa a dos filas.
+        columnas = 7 if self.width() >= 1150 else 4
+        if columnas == self._columnas_grilla: return
+        self._columnas_grilla = columnas
+        for i in range(8): self.grilla.setColumnStretch(i, 0)
+        for d, (caja, *_resto) in enumerate(self.columnas):
+            self.grilla.addWidget(caja, d // columnas, d % columnas)
+        for i in range(columnas): self.grilla.setColumnStretch(i, 1)
+
+    def resizeEvent(self, evento):
+        super().resizeEvent(evento)
+        self._reubicar_dias()
 
     def refrescar(self):
         self.franjas = db.horarios()
@@ -544,7 +559,7 @@ class PaginaHorarios(Pagina):
         for d, (caja, titulo, resumen, lay) in enumerate(self.columnas):
             while lay.count():
                 w = lay.takeAt(0).widget()
-                if w: w.deleteLater()
+                if w: w.hide(); w.deleteLater()
             hoy = d == ahora.weekday()
             caja.setStyleSheet(f'QFrame#cajaDato {{ border: 1px solid {tema.LIMA}; background: rgba(195,245,60,0.05); }}' if hoy else '')
             titulo.setText(DIAS[d] + ('  · hoy' if hoy else ''))
@@ -560,7 +575,7 @@ class PaginaHorarios(Pagina):
                 lay.addWidget(fila)
         while self.cupos_lay.count():
             w = self.cupos_lay.takeAt(0).widget()
-            if w: w.deleteLater()
+            if w: w.hide(); w.deleteLater()
         planes = db.socios_por_plan()
         maximo = max([p['vigentes'] for p in planes] + [1])
         for i, p in enumerate(planes):
@@ -663,7 +678,7 @@ class PaginaInformes(Pagina):
         self.g_horas.fijar([(f'{h:02d}h', horas[h]) for h in rango])
         while self.planes_lay.count():
             w = self.planes_lay.takeAt(0).widget()
-            if w: w.deleteLater()
+            if w: w.hide(); w.deleteLater()
         if not e['por_plan']:
             self.planes_lay.addWidget(etiqueta('No hay ingresos en el período elegido.', 'vacio'), 0, 0)
         for i, (plan, n) in enumerate(e['por_plan']):

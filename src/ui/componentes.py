@@ -111,6 +111,7 @@ class Kpi(QFrame):
         self.valor = etiqueta('—', 'kpiValor')
         self.detalle = etiqueta('', 'tenue')
         self.detalle.setTextFormat(Qt.RichText)
+        self.titulo.setWordWrap(True); self.detalle.setWordWrap(True)
         for w in (self.titulo, self.valor, self.detalle):
             col.addWidget(w)
         col.addStretch()

@@ -62,11 +62,11 @@ class VistaCamara(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setMinimumSize(560, 360)
+        self.setMinimumSize(420, 300)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.imagen = None
         self.rostros = []
-        self.titulo, self.detalle, self.tono = 'Cámara apagada', 'Presione «Abrir / recargar cámara».', 'gris'
+        self.titulo, self.detalle, self.tono = 'Cámara apagada', 'Presione «Abrir cámara».', 'gris'
 
     def mostrar(self, imagen, rostros):
         self.imagen, self.rostros = imagen, rostros
@@ -203,11 +203,12 @@ class PaginaAcceso(QWidget):
         camara.cuerpo.addWidget(self.video, 1)
         botones = QHBoxLayout()
         botones.setSpacing(12)
-        self.abrir = boton('Abrir / recargar cámara', 'camaraFoto', al_click=self.v.iniciar,
+        self.abrir = boton('Abrir cámara', 'camaraFoto', al_click=self.v.iniciar,
                            tooltip='Abre la webcam y vuelve a cargar las fotografías registradas de los socios.')
         self.detener = boton('Detener', 'videocamOff', al_click=self.v.cerrar_camara)
         botones.addWidget(self.abrir, 1)
-        botones.addWidget(boton('Configuración de cámara', 'ajustes', al_click=self.v.configurar_camara), 1)
+        botones.addWidget(boton('Configurar cámara', 'ajustes', al_click=self.v.configurar_camara,
+                                tooltip='Elegir la webcam, un archivo de video o una URL.'), 1)
         botones.addWidget(self.detener)
         camara.cuerpo.addLayout(botones)
         cuerpo.addWidget(camara, 62)
@@ -419,7 +420,7 @@ class VentanaGimnasio(QMainWindow):
         self.setWindowTitle('PULSO GYM | Acceso facial')
         self.setWindowIcon(iconos.icono('pulso', tema.LIMA))
         self.resize(1480, 900)
-        self.setMinimumSize(1280, 780)
+        self.setMinimumSize(1360, 780)
         self.setStyleSheet(tema.ESTILO)
         self.camera = CameraManager(origen_camara())
         self.motor = TrabajadorReconocimiento()
@@ -484,7 +485,7 @@ class VentanaGimnasio(QMainWindow):
         barra.setStyleSheet(f'background:{tema.LIMA}; border-radius:2px;')
         self.eyebrow = etiqueta('', 'eyebrow'); eyebrow.addWidget(barra, 0, Qt.AlignVCenter); eyebrow.addSpacing(8)
         eyebrow.addWidget(self.eyebrow); eyebrow.addStretch(); textos.addLayout(eyebrow)
-        self.titulo = etiqueta('', 'titulo'); self.subtitulo = etiqueta('', 'subtitulo')
+        self.titulo = etiqueta('', 'titulo'); self.subtitulo = etiqueta('', 'subtitulo', ajuste=True)
         textos.addWidget(self.titulo); textos.addWidget(self.subtitulo)
         cabecera.addLayout(textos, 1)
         fecha_ic = QLabel(); fecha_ic.setPixmap(iconos.pixmap('calendario', '#C9D3DF', 20))
@@ -570,7 +571,7 @@ class VentanaGimnasio(QMainWindow):
         self.fotos.pop(socio_id, None)
         if self.listo:
             self.listo = False
-            self.estado.setText('Hay fotografías nuevas: presione «Abrir / recargar cámara» para reconocerlas.')
+            self.estado.setText('Hay fotografías nuevas: presione «Abrir cámara» para recargarlas.')
 
     # ---------- cámara y reconocimiento ----------
     def iniciar(self):
