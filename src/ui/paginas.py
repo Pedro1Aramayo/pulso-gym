@@ -333,6 +333,7 @@ class PaginaMembresias(Pagina):
         self.socio.completer().setFilterMode(Qt.MatchContains)
         self.socio.lineEdit().setPlaceholderText('Escriba nombre o DNI')
         self.socio.currentIndexChanged.connect(self.actualizar_resumen)
+        self.socio.editTextChanged.connect(self.actualizar_resumen)
         t.cuerpo.addWidget(self.socio)
         self.actual = etiqueta('', 'tenue', ajuste=True)
         t.cuerpo.addWidget(self.actual)
@@ -390,6 +391,9 @@ class PaginaMembresias(Pagina):
         self.llenar()
 
     def socio_elegido(self):
+        # Con el texto editado y sin elegir una sugerencia, currentData() sigue apuntando al socio anterior.
+        if self.socio.currentIndex() < 0 or self.socio.currentText() != self.socio.itemText(self.socio.currentIndex()):
+            return None
         sid = self.socio.currentData()
         return next((s for s in self.estado if s['id'] == sid), None)
 
@@ -466,7 +470,7 @@ class PaginaMembresias(Pagina):
 
     def pagar(self):
         s = self.socio_elegido()
-        if s is None: raise ValueError('Registre o active un socio primero.')
+        if s is None: raise ValueError('Elija un socio de la lista.' if self.estado else 'Registre o active un socio primero.')
         plan = next((p for p in self.lista_planes if p['id'] == self.grupo_planes.checkedId()), None)
         if plan is None: raise ValueError('Elija un plan.')
         hoy = ahora_local().date()

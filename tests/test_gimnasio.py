@@ -160,6 +160,13 @@ class ConfirmacionTest(unittest.TestCase):
                 aviso.assert_not_called()
         self.assertEqual(self.v.paginas.widget(1).tabla.rowCount(),1)
         self.assertEqual(self.v.paginas.widget(3).k_franjas.valor.text(),'1')
+        pagina=self.v.paginas.widget(2)
+        self.assertEqual(pagina.socio_elegido()['id'],3)
+        pagina.socio.setEditText('Otro socio')
+        self.assertIsNone(pagina.socio_elegido()); self.assertFalse(pagina.b_pagar.isEnabled())
+        with patch('src.ui.paginas.db.renovar') as renovar, self.assertRaises(ValueError):
+            pagina.pagar()
+        renovar.assert_not_called()
 
 
 class PresentacionTest(unittest.TestCase):
