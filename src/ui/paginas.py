@@ -367,7 +367,7 @@ class PaginaMembresias(Pagina):
         hoy = ahora_local().date()
         activos = [s for s in self.estado if s['activo']]
         for s in self.estado:
-            s['por_vencer'] = s['estado'] == 'Vigente' and (s['vence'] - hoy).days <= 7
+            s['por_vencer'] = s['estado'] in ('Vigente', 'Cupo agotado') and (s['vence'] - hoy).days <= 7
         self.k_recaudado.mostrar(fmt.moneda(cobro['recaudado']), f"{cobro['pagos']} pagos en {fmt.MESES[hoy.month - 1]}")
         self.k_vigentes.mostrar(sum(1 for s in activos if s['estado'] in ('Vigente', 'Cupo agotado')))
         self.k_por_vencer.mostrar(sum(1 for s in activos if s['por_vencer']), 'Recordar la renovación')
@@ -447,7 +447,7 @@ class PaginaMembresias(Pagina):
                 t.setCellWidget(i, 4, cont)
             else:
                 t.setItem(i, 4, item(f"{s['usados']} ingresos · sin cupo" if s['plan'] else '—'))
-            t.setCellWidget(i, 5, celda_insignia('Por vencer' if s['por_vencer'] else
+            t.setCellWidget(i, 5, celda_insignia('Por vencer' if s['por_vencer'] and s['estado'] == 'Vigente' else
                                                  (s['estado'] if s['activo'] else 'Inactivo')))
         t.setColumnWidth(4, 170)
         t.blockSignals(False)
