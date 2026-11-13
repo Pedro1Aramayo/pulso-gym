@@ -96,4 +96,40 @@ class PostgresTest(unittest.TestCase):
         self.assertFalse(db.confirmar_ingreso(self.sid,self.mid,uuid4())[0])
         self.assertEqual(db.estado_membresias()[0]['estado'],'Vencida')
 
+    def test_tablero_y_ultimos_accesos_salen_de_la_base(self):
+        r=db.resumen_acceso()
+        self.assertEqual((r['ingresos_hoy'],r['socios_activos'],r['vencen_hoy']),(0,1,0))
+        self.assertTrue(db.confirmar_ingreso(self.sid,self.mid,uuid4())[0])
+        with db.transaccion() as c:
+            c.execute('INSERT INTO ingreso(membresia_id,instante,solicitud) VALUES (%s,%s,%s)',
+                      (self.mid,datetime(2026,10,13,9,tzinfo=ZONA),str(uuid4())))
+        r=db.resumen_acceso()
+        self.assertEqual((r['ingresos_hoy'],r['ingresos_semana_anterior']),(1,1))
+        accesos=db.ultimos_accesos(5)
+        self.assertEqual([a['instante'].day for a in accesos],[20,13]); self.assertEqual(accesos[0]['nombre'],'Ana')
+        self.reloj.return_value=datetime(2026,11,20,10,tzinfo=ZONA)
+        self.assertEqual(db.resumen_acceso()['vencen_hoy'],1)
+        self.assertFalse(db.consultar_acceso(self.sid)['decision'].permitido)
+
+    def test_foto_y_edicion_de_socio(self):
+        self.assertEqual(db.foto_socio(self.sid),b'prueba')
+        db.actualizar_socio(self.sid,dict(nombre='Ana María',apellido='Prueba',dni='12345678',celular='381 555',correo_electronico='ana@correo.com'),{'frontal':b'nueva'})
+        self.assertEqual(db.foto_socio(self.sid),b'nueva'); self.assertEqual(db.foto_socio(self.sid,'derecho'),b'prueba')
+        self.assertEqual(db.listar_socios()[0]['nombre'],'Ana María')
+        otro=db.registrar_socio(dict(nombre='Beto',apellido='Dos',dni='87654321'),dict(frontal=b'b',izquierdo=b'b',derecho=b'b'))
+        with self.assertRaisesRegex(ValueError,'Ya existe'): db.actualizar_socio(otro,dict(nombre='Beto',apellido='Dos',dni='12345678'))
+        with self.assertRaisesRegex(ValueError,'Ya existe'): db.registrar_socio(dict(nombre='X',apellido='Y',dni='87654321'),dict(frontal=b'b',izquierdo=b'b',derecho=b'b'))
+        self.assertEqual(len(db.listar_socios()),2)
+
+    def test_pagos_historial_y_planes(self):
+        self.reloj.return_value+=timedelta(minutes=5)
+        db.renovar(self.sid,5,300)
+        historial=db.historial_membresias(self.sid)
+        self.assertEqual([h['plan'] for h in historial],['Pase libre','2 veces por semana'])
+        self.assertIsNotNone(historial[1]['cerrada_en'])
+        self.assertEqual(float(db.resumen_pagos()['recaudado']),400)
+        vigentes={p['nombre']:p['vigentes'] for p in db.socios_por_plan()}
+        self.assertEqual((vigentes['Pase libre'],vigentes['2 veces por semana']),(1,0))
+        self.assertEqual(db.diagnostico()['socios'],1)
+
 if __name__=='__main__': unittest.main()

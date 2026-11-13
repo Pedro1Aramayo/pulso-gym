@@ -65,30 +65,55 @@ APP=QApplication.instance() or QApplication([])
 class ConfirmacionTest(unittest.TestCase):
     def setUp(self):
         self.v=VentanaGimnasio()
-        self.estado={'socio':{'nombre':'Ana','apellido':'Prueba','dni':'12345678'},
-                     'membresia':{'id':5,'plan':'2 veces por semana','vence':date(2026,11,20)},
+        self.estado={'socio':{'id':1,'nombre':'Ana','apellido':'Prueba','dni':'12345678','activo':True},
+                     'membresia':{'id':5,'plan':'2 veces por semana','vence':date(2026,11,20),'cupo':8,'una_vez_dia':False},
                      'decision':Decision(True,'Ingreso habilitado.',8)}
+        self.foto=patch.object(self.v,'foto',return_value=None); self.foto.start()
 
     def tearDown(self):
-        self.v.close(); APP.processEvents()
+        self.foto.stop(); self.v.close(); APP.processEvents()
+
+    def proponer(self):
+        with patch('src.ui.gimnasio.db.consultar_acceso',return_value=self.estado):
+            self.v.proponer(1)
+
+    def test_reconocer_solo_muestra_panel_sin_persistir(self):
+        with patch('src.ui.gimnasio.db.confirmar_ingreso') as guardar:
+            self.proponer()
+        guardar.assert_not_called(); self.assertTrue(self.v.modal)
+        self.assertTrue(self.v.acceso.confirmar.isEnabled()); self.assertTrue(self.v.acceso.cancelar.isEnabled())
+        self.assertEqual(self.v.acceso.nombre.text(),'Ana Prueba')
+        self.assertEqual(self.v.acceso.restantes.text(),'8 de 8')
+        self.assertEqual(self.v.acceso.vence.text(),'20 nov. 2026')
 
     def test_cancelar_no_persiste(self):
-        with patch('src.ui.gimnasio.db.consultar_acceso',return_value=self.estado), \
-             patch('src.ui.gimnasio.db.confirmar_ingreso') as guardar, \
-             patch.object(QMessageBox,'question',return_value=QMessageBox.Cancel):
-            self.v.proponer(1)
+        self.proponer()
+        with patch('src.ui.gimnasio.db.confirmar_ingreso') as guardar:
+            self.v.acceso.cancelar.click()
+        guardar.assert_not_called(); self.assertFalse(self.v.modal)
+        self.assertFalse(self.v.acceso.confirmar.isEnabled())
+
+    def test_confirmar_persiste_una_vez_con_la_misma_solicitud(self):
+        self.proponer()
+        solicitud=self.v.pendiente['solicitud']
+        with patch('src.ui.gimnasio.db.confirmar_ingreso',return_value=(True,'Guardado')) as guardar, \
+             patch.object(self.v.acceso,'refrescar'):
+            self.v.confirmar(); self.v.confirmar(); self.v.acceso.confirmar.click()
+        guardar.assert_called_once_with(1,5,solicitud); self.assertFalse(self.v.modal)
+        self.assertEqual(self.v.acceso.restantes.text(),'7 de 8')
+
+    def test_expiracion_cancela_sin_persistir(self):
+        self.proponer()
+        with patch('src.ui.gimnasio.db.confirmar_ingreso') as guardar:
+            self.v.expira.timeout.emit()
         guardar.assert_not_called(); self.assertFalse(self.v.modal)
 
-    def test_ok_persiste_una_vez_y_pausa_inferencia(self):
-        def modal(*args):
-            self.assertTrue(self.v.modal)
-            self.assertEqual(args[3],QMessageBox.Ok|QMessageBox.Cancel)
-            return QMessageBox.Ok
-        with patch('src.ui.gimnasio.db.consultar_acceso',return_value=self.estado), \
-             patch('src.ui.gimnasio.db.confirmar_ingreso',return_value=(True,'Guardado')) as guardar, \
-             patch.object(QMessageBox,'question',side_effect=modal):
-            self.v.proponer(1)
-        guardar.assert_called_once(); self.assertFalse(self.v.modal)
+    def test_cambiar_de_seccion_cancela_la_confirmacion(self):
+        self.proponer()
+        with patch('src.ui.gimnasio.db.confirmar_ingreso') as guardar, \
+             patch.object(self.v.paginas.widget(1),'refrescar'):
+            self.v.ir(1)
+        guardar.assert_not_called(); self.assertFalse(self.v.modal)
 
     def test_modal_no_envia_reconocimientos_y_mantiene_camara(self):
         import numpy as np
@@ -98,13 +123,13 @@ class ConfirmacionTest(unittest.TestCase):
             self.v.frame()
         enviar.assert_not_called(); self.v.camera.cerrar.assert_not_called()
 
-    def test_rechazo_no_muestra_confirmacion(self):
+    def test_rechazo_no_habilita_confirmacion(self):
         self.estado['decision']=Decision(False,'Cupo agotado')
-        with patch('src.ui.gimnasio.db.consultar_acceso',return_value=self.estado), \
-             patch('src.ui.gimnasio.db.confirmar_ingreso') as guardar, \
-             patch.object(QMessageBox,'question') as modal:
-            self.v.proponer(1)
-        guardar.assert_not_called(); modal.assert_not_called()
+        with patch('src.ui.gimnasio.db.confirmar_ingreso') as guardar:
+            self.proponer()
+        guardar.assert_not_called(); self.assertFalse(self.v.modal)
+        self.assertFalse(self.v.acceso.confirmar.isEnabled())
+        self.assertEqual(self.v.acceso.mensaje.text(),'Cupo agotado')
 
     def test_respuesta_de_sesion_anterior_se_descarta(self):
         self.v.sesion=2
@@ -113,10 +138,97 @@ class ConfirmacionTest(unittest.TestCase):
         proponer.assert_not_called()
 
     def test_error_al_guardar_reanuda_reconocimiento(self):
-        with patch('src.ui.gimnasio.db.consultar_acceso',return_value=self.estado), \
-             patch('src.ui.gimnasio.db.confirmar_ingreso',side_effect=RuntimeError('sin conexión')), \
-             patch.object(QMessageBox,'question',return_value=QMessageBox.Ok):
-            with self.assertRaises(RuntimeError): self.v.proponer(1)
+        self.proponer()
+        with patch('src.ui.gimnasio.db.confirmar_ingreso',side_effect=RuntimeError('sin conexión')):
+            with self.assertRaises(RuntimeError): self.v.confirmar()
         self.assertFalse(self.v.modal)
+
+    def test_todas_las_secciones_cargan_con_la_base(self):
+        from src.domain.reglas import ahora_local
+        socio={'id':3,'nombre':'Ana','apellido':'Prueba','dni':'12345678','celular':'','correo_electronico':'',
+               'activo':True,'creado_en':ahora_local(),'membresia_id':1,'plan':'Pase libre','una_vez_dia':False,
+               'inicio':date(2026,10,1),'vence':date(2026,11,1),'importe':1000,'pagado_en':ahora_local(),
+               'cupo':None,'usados':2,'restantes':None,'ultimo_ingreso':None,'estado':'Vigente'}
+        with patch.multiple('src.ui.paginas.db',estado_membresias=Mock(return_value=[socio]),
+                            planes=Mock(return_value=[{'id':1,'nombre':'Pase libre','cupo':None,'una_vez_dia':False}]),
+                            resumen_pagos=Mock(return_value={'recaudado':1000,'pagos':1}),
+                            horarios=Mock(return_value=[{'id':1,'dia':0,'abre':time(7),'cierra':time(12)}]),
+                            socios_por_plan=Mock(return_value=[{'id':1,'nombre':'Pase libre','cupo':None,'una_vez_dia':False,'vigentes':1}]),
+                            listar_socios=Mock(return_value=[socio]),informe=Mock(return_value=[])):
+            for i in range(1,5):
+                with patch.object(QMessageBox,'warning') as aviso:
+                    self.v.ir(i)
+                aviso.assert_not_called()
+        self.assertEqual(self.v.paginas.widget(1).tabla.rowCount(),1)
+        self.assertEqual(self.v.paginas.widget(3).k_franjas.valor.text(),'1')
+        pagina=self.v.paginas.widget(2)
+        self.assertEqual(pagina.socio_elegido()['id'],3)
+        pagina.socio.setEditText('Otro socio')
+        self.assertIsNone(pagina.socio_elegido()); self.assertFalse(pagina.b_pagar.isEnabled())
+        with patch('src.ui.paginas.db.renovar') as renovar, self.assertRaises(ValueError):
+            pagina.pagar()
+        renovar.assert_not_called()
+
+
+class PresentacionTest(unittest.TestCase):
+    def test_formatos(self):
+        from src.domain import presentacion as f
+        self.assertEqual(f.fecha_larga(date(2025,1,27)),'Lunes, 27 de enero de 2025')
+        self.assertEqual(f.fecha_corta(date(2025,2,28)),'28 feb. 2025')
+        self.assertEqual(f.moneda(25000.5),'$ 25.000,50')
+        self.assertEqual(f.dni('12345678'),'12.345.678')
+        self.assertEqual(f.numero_socio(37),'0037')
+        self.assertEqual(f.ultimo_dia(date(2026,11,20)),date(2026,11,19))
+
+    def test_variacion_solo_con_base_real(self):
+        from src.domain.presentacion import variacion
+        self.assertIsNone(variacion(5,0)); self.assertEqual(variacion(112,100),12); self.assertEqual(variacion(50,100),-50)
+
+    def test_restantes_por_tipo_de_plan(self):
+        from src.domain.presentacion import texto_restantes as tr
+        self.assertEqual(tr({'cupo': 8}, None), '—')
+        from src.domain.presentacion import texto_restantes
+        self.assertEqual(texto_restantes({'cupo':12,'una_vez_dia':False},3),'3 de 12')
+        self.assertEqual(texto_restantes({'cupo':None,'una_vez_dia':True},None),'1 por día')
+        self.assertEqual(texto_restantes({'cupo':None,'una_vez_dia':False},None),'Ilimitados')
+
+    def test_estado_horario(self):
+        from src.domain.presentacion import estado_horario
+        h=[{'dia':0,'abre':time(7),'cierra':time(12)},{'dia':0,'abre':time(16),'cierra':time(22)}]
+        lunes=datetime(2026,11,16,10,tzinfo=ZONA)
+        self.assertEqual(estado_horario(h,lunes),('Abierto','hasta las 12:00'))
+        self.assertEqual(estado_horario(h,lunes.replace(hour=13)),('Cerrado','abre hoy 16:00'))
+        self.assertEqual(estado_horario(h,lunes.replace(hour=22)),('Cerrado','abre lunes 07:00'))
+        self.assertEqual(estado_horario([],lunes),('Cerrado','sin horarios configurados'))
+
+    def test_estadisticas_del_periodo(self):
+        from src.domain.presentacion import estadisticas_ingresos
+        filas=[{'instante':datetime(2026,11,2,9,tzinfo=ZONA),'socio_id':1,'plan':'A'},
+               {'instante':datetime(2026,11,2,18,tzinfo=ZONA),'socio_id':2,'plan':'B'},
+               {'instante':datetime(2026,11,3,9,tzinfo=ZONA),'socio_id':1,'plan':'A'}]
+        e=estadisticas_ingresos(filas,date(2026,11,1),date(2026,11,3))
+        self.assertEqual((e['total'],e['socios'],e['pico']),(3,2,(date(2026,11,2),2)))
+        self.assertEqual([n for _,n in e['serie']],[0,2,1]); self.assertEqual(e['por_plan'][0],('A',2))
+        self.assertEqual(e['por_hora'][9],2)
+
+
+class CamaraTest(unittest.TestCase):
+    def test_origen_indice_o_ruta(self):
+        from src.camera.camera_manager import normalizar_origen
+        self.assertEqual(normalizar_origen('1'),1); self.assertEqual(normalizar_origen(''),0)
+        self.assertEqual(normalizar_origen('rtsp://camara/1'),'rtsp://camara/1')
+
+
+class ValidacionSocioTest(unittest.TestCase):
+    def test_datos_invalidos_no_llegan_a_la_base(self):
+        from src.database import gimnasio as db
+        base={'nombre':'Ana','apellido':'Prueba','dni':'12345678','celular':'','correo_electronico':''}
+        fotos={a:b'x' for a in ('frontal','izquierdo','derecho')}
+        with patch('src.database.gimnasio.transaccion') as t:
+            for cambio in [{'nombre':' '},{'dni':'12a45'},{'dni':'123'},{'correo_electronico':'sin-arroba'},{'celular':'abc'}]:
+                with self.assertRaises(ValueError): db.registrar_socio({**base,**cambio},fotos)
+            with self.assertRaises(ValueError): db.registrar_socio(base,{'frontal':b'x'})
+            with self.assertRaises(ValueError): db.actualizar_socio(1,base,{'perfil':b'x'})
+        t.assert_not_called()
 
 if __name__=='__main__': unittest.main()

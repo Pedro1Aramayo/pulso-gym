@@ -16,7 +16,7 @@ Recepción necesita decidir automáticamente si una persona puede entrenar. El r
 
 ## Flujo principal
 
-Cámara → un solo rostro → FaceNet512 → socio → estado y membresía → horario → antirrebote → cupo/regla diaria → modal OK/Cancelar → revalidación transaccional → ingreso.
+Cámara → un solo rostro → FaceNet512 → socio → estado y membresía → horario → antirrebote → cupo/regla diaria → panel Confirmar/Cancelar → revalidación transaccional → ingreso.
 
 La cámara permanece abierta durante el modal y actualiza el video. La variable `modal` impide enviar nuevas inferencias. `finally` restablece ese estado incluso cuando la base falla. La operación de consulta no contiene INSERT ni UPDATE. Al confirmar se toma un bloqueo por socio; si dos solicitudes llegan simultáneamente, solo una puede consumir el último cupo. Las respuestas de una sesión de cámara anterior se descartan.
 

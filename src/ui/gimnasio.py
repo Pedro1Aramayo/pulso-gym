@@ -1,334 +1,738 @@
 """Recepción de PULSO GYM. Reconocimiento sin escrituras hasta confirmar."""
 import os
-from time import monotonic
 from threading import Event
+from time import monotonic
+from pathlib import Path
 from uuid import uuid4
+
 import cv2
-import numpy as np
-from PySide6.QtCore import Qt, QTimer, QDate, QTime
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QMainWindow,QWidget,QLabel,QPushButton,QVBoxLayout,QHBoxLayout,
-    QFormLayout,QLineEdit,QComboBox,QStackedWidget,QMessageBox,QFileDialog,QTableWidget,
-    QTableWidgetItem,QHeaderView,QDateEdit,QTimeEdit,QDoubleSpinBox,QDialog,QDialogButtonBox)
-from src.database import gimnasio as db
-from src.domain.reglas import ahora_local
+from PySide6.QtCore import QEvent, QProcess, QRectF, QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
+from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox,
+                               QPushButton, QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
+
 from src.camera.camera_manager import CameraManager
-from src.ui.captura_foto import CapturaFotoDialog
+from src.database import gimnasio as db
+from src.domain import presentacion as fmt
+from src.domain.reglas import ahora_local
 from src.recognition.trabajador_reconocimiento import TrabajadorReconocimiento
-from src.reports.gimnasio import exportar
+from src.ui import iconos, tema
+from src.ui.componentes import Avatar, Insignia, Kpi, Tarjeta, boton, etiqueta, separador
 
-DIAS = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo']
-ESTILO = """
-QWidget {background:#111c29; color:#e8eef5; font-family:'Segoe UI'; font-size:14px;}
-QLabel#marca {color:#b8f34a; font-size:27px; font-weight:800;}
-QLabel#titulo {font-size:25px; font-weight:700;}
-QLabel#ayuda {color:#aebfd2;}
-QPushButton {background:#263a50; border:0; border-radius:6px; padding:11px 18px;}
-QPushButton:hover {background:#36536e;}
-QPushButton:disabled {color:#718096; background:#1b2939;}
-QPushButton#primario {background:#b8f34a; color:#13200a; font-weight:700;}
-QLineEdit,QComboBox,QDateEdit,QTimeEdit,QDoubleSpinBox {background:#1b2b3e; padding:8px; border:1px solid #3b5169; border-radius:4px;}
-QTableWidget {background:#162437; gridline-color:#30455d; alternate-background-color:#203248;}
-QHeaderView::section {background:#263a50; padding:8px; border:0; color:#b8f34a;}
-"""
+ESPERA_CONFIRMACION_MS = 45000
+DESCANSO_RESULTADO_MS = 9000
 
-def boton(texto, funcion, primario=False):
-    b=QPushButton(texto)
-    if primario: b.setObjectName('primario')
-    b.clicked.connect(funcion)
-    return b
 
-def tabla(cabeceras):
-    t=QTableWidget(0,len(cabeceras)); t.setHorizontalHeaderLabels(cabeceras)
-    t.setEditTriggers(QTableWidget.NoEditTriggers)
-    t.setSelectionBehavior(QTableWidget.SelectRows)
-    t.setSelectionMode(QTableWidget.SingleSelection)
-    t.setAlternatingRowColors(True)
-    t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-    t.horizontalHeader().setStretchLastSection(True)
-    return t
+def origen_camara():
+    guardado = QSettings('PULSO GYM', 'Recepcion').value('camara/origen')
+    return guardado if guardado not in (None, '') else os.getenv('CAMERA_INDEX', '0')
 
-def llenar(t, filas):
-    t.setRowCount(len(filas))
-    for i,f in enumerate(filas):
-        for j,v in enumerate(f):
-            t.setItem(i,j,QTableWidgetItem('—' if v is None else str(v)))
+
+class TextoEstado(QLabel):
+    """Mensaje de recepción; cada cambio se refleja sobre el video."""
+    cambio = Signal(str)
+
+    def setText(self, texto):
+        super().setText(texto)
+        self.cambio.emit(texto)
+
+
+class Logo(QWidget):
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 0, 0, 0)
+        lay.setSpacing(10)
+        fila = QHBoxLayout()
+        fila.setSpacing(10)
+        pulso = QLabel()
+        pulso.setPixmap(iconos.pixmap('pulso', tema.LIMA, 54))
+        fila.addWidget(pulso, 0, Qt.AlignVCenter)
+        texto = QLabel(f"<div style='line-height:86%'><span style='color:#F4F7FB'>PULSO</span><br>"
+                       f"<span style='color:{tema.LIMA}'>GYM</span></div>")
+        texto.setStyleSheet("font-family:'Montserrat'; font-size:30px; font-weight:800;")
+        fila.addWidget(texto)
+        fila.addStretch()
+        lay.addLayout(fila)
+        lay.addWidget(etiqueta('GESTIÓN INTEGRAL DEL GIMNASIO', 'lema'))
+
+
+class VistaCamara(QWidget):
+    """Video de la webcam con esquinas redondeadas, marco de rostro y estado superpuesto."""
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumSize(420, 300)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.imagen = None
+        self.rostros = []
+        self.titulo, self.detalle, self.tono = 'Cámara apagada', 'Presione «Abrir cámara».', 'gris'
+
+    def mostrar(self, imagen, rostros):
+        self.imagen, self.rostros = imagen, rostros
+        self.update()
+
+    def limpiar(self):
+        self.imagen, self.rostros = None, []
+        self.update()
+
+    def estado(self, titulo, detalle='', tono='lima'):
+        self.titulo, self.detalle, self.tono = titulo, detalle, tono
+        self.update()
+
+    def _area_imagen(self):
+        if self.imagen is None:
+            return QRectF(self.rect())
+        w, h = self.imagen.width(), self.imagen.height()
+        escala = max(self.width() / w, self.height() / h)
+        return QRectF((self.width() - w * escala) / 2, (self.height() - h * escala) / 2, w * escala, h * escala)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        camino = QPainterPath()
+        camino.addRoundedRect(QRectF(self.rect()), 14, 14)
+        p.setClipPath(camino)
+        p.fillRect(self.rect(), QColor('#060C14'))
+        if self.imagen is not None:
+            area = self._area_imagen()
+            p.drawImage(area, self.imagen)
+            escala = area.width() / self.imagen.width()
+            p.setPen(QPen(QColor(tema.LIMA), 4, Qt.SolidLine, Qt.RoundCap))
+            for x, y, w, h in self.rostros:
+                r = QRectF(area.x() + x * escala, area.y() + y * escala, w * escala, h * escala).adjusted(-14, -18, 14, 14)
+                largo = min(r.width(), r.height()) * 0.22
+                for cx, cy, dx, dy in ((r.left(), r.top(), 1, 1), (r.right(), r.top(), -1, 1),
+                                       (r.left(), r.bottom(), 1, -1), (r.right(), r.bottom(), -1, -1)):
+                    p.drawLine(int(cx), int(cy), int(cx + dx * largo), int(cy))
+                    p.drawLine(int(cx), int(cy), int(cx), int(cy + dy * largo))
+        else:
+            ic = iconos.pixmap('videocamOff', '#3A4B60', 64)
+            p.drawPixmap(int(self.width() / 2 - 32), int(self.height() / 2 - 70), ic)
+        p.setClipping(False)
+        p.setPen(QPen(QColor('#1E2C3E'), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
+        self._pintar_estado(p)
+
+    def _pintar_estado(self, p):
+        color = QColor({'lima': tema.LIMA, 'rojo': tema.ROJO, 'ambar': tema.AMBAR, 'gris': '#7D8DA3'}[self.tono])
+        f1, f2 = QFont('Inter', 11), QFont('Inter', 10)
+        f1.setWeight(QFont.DemiBold)
+        ancho = min(self.width() - 40, max(330, 90 + 8 * max(len(self.titulo), len(self.detalle) * 0.9)))
+        r = QRectF((self.width() - ancho) / 2, self.height() - 86, ancho, 62)
+        fondo = QColor(10, 22, 18, 225) if self.tono == 'lima' else QColor(12, 18, 28, 230)
+        p.setPen(QPen(color, 1.4))
+        p.setBrush(fondo)
+        p.drawRoundedRect(r, 12, 12)
+        nombre = {'lima': 'checkCirculo', 'rojo': 'xCirculo', 'ambar': 'alerta', 'gris': 'info'}[self.tono]
+        p.drawPixmap(int(r.left() + 18), int(r.center().y() - 15), iconos.pixmap(nombre, color.name(), 30))
+        p.setPen(QColor('#F4F7FB'))
+        p.setFont(f1)
+        p.drawText(QRectF(r.left() + 62, r.top() + 10, r.width() - 76, 22), Qt.AlignLeft | Qt.AlignVCenter, self.titulo)
+        p.setPen(QColor('#B9C5D3'))
+        p.setFont(f2)
+        p.drawText(QRectF(r.left() + 62, r.top() + 31, r.width() - 76, 20), Qt.AlignLeft | Qt.AlignVCenter,
+                   p.fontMetrics().elidedText(self.detalle, Qt.ElideRight, int(r.width() - 80)))
+
+
+class FilaAcceso(QFrame):
+    ALTO = 56
+
+    def __init__(self, acceso, foto):
+        super().__init__()
+        self.setObjectName('filaAcceso')
+        self.setFixedHeight(self.ALTO)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 8, 4, 8)
+        lay.setSpacing(12)
+        avatar = Avatar(38, circular=False, radio=8)
+        avatar.mostrar_foto(foto, fmt.iniciales(acceso['nombre'], acceso['apellido']))
+        lay.addWidget(avatar)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        nombre = etiqueta(f"{acceso['nombre']} {acceso['apellido']}")
+        nombre.setStyleSheet('font-weight:600; font-size:14px;')
+        col.addWidget(nombre)
+        col.addWidget(etiqueta(f"N.º {fmt.numero_socio(acceso['socio_id'])}", 'tenue'))
+        lay.addLayout(col, 1)
+        lay.addWidget(Insignia(acceso['plan'], '#AFC0D3'))
+        instante = acceso['instante']
+        hora = etiqueta(f'{instante:%H:%M}' if instante.date() == ahora_local().date() else f'{instante:%d/%m %H:%M}')
+        hora.setMinimumWidth(76)
+        hora.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lay.addWidget(hora)
+        lay.addWidget(Insignia('✓ Ingreso', 'lima'))
+
+
+class PaginaAcceso(QWidget):
+    eyebrow = 'CONTROL DE ACCESO'
+    titulo = 'Acceso facial de socios'
+    subtitulo = 'Validá la identidad del socio con la cámara y registrá su ingreso al gimnasio.'
+
+    def __init__(self, ventana):
+        super().__init__()
+        self.v = ventana
+        self._accesos, self._mostrados = [], None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(18)
+        kpis = QHBoxLayout()
+        kpis.setSpacing(18)
+        self.kpi_ingresos = Kpi('Ingresos hoy', 'puerta')
+        self.variacion = Insignia()
+        self.variacion.hide()
+        self.kpi_ingresos.layout().addWidget(self.variacion, 0, Qt.AlignBottom)
+        self.kpi_activos = Kpi('Socios activos', 'socios', tema.AZUL)
+        self.kpi_vencen = Kpi('Vencen hoy', 'calendario', tema.AMBAR)
+        self.kpi_camara = Kpi('Cámara', 'videocam', tema.LIMA, 'kpiCamara')
+        self.estado_camara = Insignia()
+        self.kpi_camara.valor.hide()
+        self.kpi_camara.layout().itemAt(1).layout().insertWidget(2, self.estado_camara)
+        for k in (self.kpi_ingresos, self.kpi_activos, self.kpi_vencen, self.kpi_camara):
+            kpis.addWidget(k, 1)
+        lay.addLayout(kpis)
+
+        cuerpo = QHBoxLayout()
+        cuerpo.setSpacing(18)
+        self.en_vivo = Insignia()
+        camara = Tarjeta('Cámara de acceso', self.en_vivo, margen=18)
+        self._icono_titulo(camara, 'videocam')
+        self.video = VistaCamara()
+        camara.cuerpo.addWidget(self.video, 1)
+        botones = QHBoxLayout()
+        botones.setSpacing(12)
+        self.abrir = boton('Abrir cámara', 'camaraFoto', al_click=self.v.iniciar,
+                           tooltip='Abre la webcam y vuelve a cargar las fotografías registradas de los socios.')
+        self.detener = boton('Detener', 'videocamOff', al_click=self.v.cerrar_camara)
+        botones.addWidget(self.abrir, 1)
+        botones.addWidget(boton('Configurar cámara', 'ajustes', al_click=self.v.configurar_camara,
+                                tooltip='Elegir la webcam, un archivo de video o una URL.'), 1)
+        botones.addWidget(self.detener)
+        camara.cuerpo.addLayout(botones)
+        cuerpo.addWidget(camara, 62)
+
+        derecha = QVBoxLayout()
+        derecha.setSpacing(18)
+        derecha.addWidget(self._panel_socio())
+        accion = boton('Ver informe completo', None, 'enlace', al_click=lambda: self.v.ir(4))
+        accion.setIcon(iconos.icono('chevron', tema.LIMA))
+        accion.setLayoutDirection(Qt.RightToLeft)
+        self.accesos = Tarjeta('Últimos accesos', accion, margen=18)
+        self.accesos.installEventFilter(self)
+        self._icono_titulo(self.accesos, 'reloj')
+        self.lista_accesos = QVBoxLayout()
+        self.lista_accesos.setSpacing(0)
+        self.accesos.cuerpo.addLayout(self.lista_accesos)
+        self.accesos.cuerpo.addStretch()
+        derecha.addWidget(self.accesos, 1)
+        cuerpo.addLayout(derecha, 38)
+        lay.addLayout(cuerpo, 1)
+
+    def _icono_titulo(self, tarjeta, nombre, color=tema.TEXTO):
+        fila = tarjeta.cuerpo.itemAt(0).layout()
+        ic = QLabel()
+        ic.setPixmap(iconos.pixmap(nombre, color, 22))
+        fila.insertWidget(0, ic)
+        fila.insertSpacing(1, 6)
+        return ic
+
+    def _panel_socio(self):
+        self.panel = Tarjeta('Socio reconocido', margen=20)
+        self.panel_icono = self._icono_titulo(self.panel, 'checkCirculo', tema.LIMA)
+        fila = QHBoxLayout()
+        fila.setSpacing(20)
+        self.foto = Avatar(116, circular=False, radio=12)
+        self.foto.setFixedSize(116, 116)
+        fila.addWidget(self.foto)
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addStretch()
+        self.nombre = etiqueta('Esperando socio', 'nombreSocio')
+        self.numero = etiqueta('Ubíquese frente a la cámara.', 'tenue')
+        self.plan = Insignia()
+        self.plan.hide()
+        for w in (self.nombre, self.numero):
+            col.addWidget(w)
+        col.addSpacing(6)
+        col.addWidget(self.plan)
+        col.addStretch()
+        fila.addLayout(col, 1)
+        self.panel.cuerpo.addLayout(fila)
+        self.panel.cuerpo.addWidget(separador())
+        datos = QHBoxLayout()
+        datos.setSpacing(14)
+        self.restantes = self._dato(datos, 'puerta', 'Ingresos restantes', 'datoLima')
+        datos.addWidget(separador(True))
+        self.vence = self._dato(datos, 'calendario', 'Vencimiento', 'datoValor')
+        self.panel.cuerpo.addLayout(datos)
+        self.mensaje = etiqueta('', 'tenue', ajuste=True)
+        self.mensaje.hide()
+        self.panel.cuerpo.addWidget(self.mensaje)
+        botones = QHBoxLayout()
+        botones.setSpacing(12)
+        self.confirmar = boton('Confirmar ingreso', 'check', 'primario',
+                               al_click=lambda: self.v.intentar(self.v.confirmar), tooltip='Registrar el ingreso (Enter)')
+        self.cancelar = boton('Cancelar', 'x', al_click=lambda: self.v.cancelar(), tooltip='No registrar el ingreso (Esc)')
+        for b in (self.confirmar, self.cancelar):
+            b.setMinimumHeight(50)
+        botones.addWidget(self.confirmar, 3)
+        botones.addWidget(self.cancelar, 2)
+        self.panel.cuerpo.addLayout(botones)
+        self.panel_espera()
+        return self.panel
+
+    def _dato(self, fila, icono, titulo, estilo):
+        caja = QHBoxLayout()
+        caja.setSpacing(12)
+        circulo = QLabel()
+        circulo.setFixedSize(42, 42)
+        circulo.setAlignment(Qt.AlignCenter)
+        circulo.setStyleSheet('background:#16212F; border:1px solid #223146; border-radius:10px;')
+        circulo.setPixmap(iconos.pixmap(icono, '#C9D3DF', 20))
+        caja.addWidget(circulo)
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        col.addWidget(etiqueta(titulo, 'datoTitulo'))
+        valor = etiqueta('—', estilo)
+        col.addWidget(valor)
+        caja.addLayout(col, 1)
+        fila.addLayout(caja, 1)
+        return valor
+
+    def _panel(self, tono, titulo, icono, color):
+        self.panel.tono(tono)
+        self.panel.titulo.setText(titulo)
+        self.panel.titulo.setStyleSheet(f'color:{color};' if tono else '')
+        self.panel_icono.setPixmap(iconos.pixmap(icono, color, 22))
+
+    def panel_espera(self):
+        self._panel(None, 'Socio reconocido', 'usuario', tema.TENUE)
+        self.foto.limpiar()
+        self.nombre.setText('Esperando socio')
+        self.numero.setText('Ubíquese frente a la cámara.')
+        self.plan.hide()
+        self.restantes.setText('—')
+        self.vence.setText('—')
+        self.mensaje.hide()
+        self.confirmar.setEnabled(False)
+        self.cancelar.setEnabled(False)
+
+    def panel_socio(self, estado, foto, tono, mensaje=''):
+        socio, m = estado['socio'], estado['membresia']
+        titulos = {'lima': ('Socio reconocido', 'checkCirculo', tema.LIMA),
+                   'rojo': ('Acceso no habilitado', 'xCirculo', tema.ROJO),
+                   'ambar': ('Revisar ingreso', 'alerta', tema.AMBAR)}
+        self._panel(tono, *titulos[tono])
+        if socio:
+            self.foto.mostrar_foto(foto, fmt.iniciales(socio['nombre'], socio['apellido']))
+            self.nombre.setText(f"{socio['nombre']} {socio['apellido']}")
+            self.numero.setText(f"N.º de socio: {fmt.numero_socio(socio['id'])} · DNI {fmt.dni(socio['dni'])}")
+        if m:
+            self.plan.fijar(f"★  {m['plan']}", 'ambar')
+            self.plan.show()
+            self.restantes.setText(fmt.texto_restantes(m, estado['decision'].restantes))
+            self.vence.setText(fmt.fecha_corta(m['vence']))
+            self.vence.setToolTip(f"Último día con acceso: {fmt.fecha_numerica(fmt.ultimo_dia(m['vence']))}")
+        else:
+            self.plan.hide()
+            self.restantes.setText('—')
+            self.vence.setText('—')
+        self.mensaje.setObjectName('mensajeOk' if tono == 'lima' else 'mensajeError')
+        self.mensaje.setStyleSheet(f"color:{ {'lima': tema.LIMA, 'rojo': tema.ROJO, 'ambar': tema.AMBAR}[tono] }; font-weight:600;")
+        self.mensaje.setText(mensaje)
+        self.mensaje.setVisible(bool(mensaje))
+
+    def refrescar(self, silencioso=False):
+        try:
+            r = db.resumen_acceso()
+            self._accesos = db.ultimos_accesos(8)
+        except Exception as e:
+            if not silencioso:
+                raise
+            print(type(e).__name__, str(e))
+            return
+        self.kpi_ingresos.mostrar(r['ingresos_hoy'])
+        var = fmt.variacion(r['ingresos_hoy'], r['ingresos_semana_anterior'])
+        if var is None:
+            self.variacion.hide()
+        else:
+            self.variacion.fijar(f"↑ +{var}%" if var >= 0 else f"↓ {abs(var)}%", 'lima' if var >= 0 else 'rojo')
+            self.variacion.setToolTip(f"Comparado con el mismo día de la semana pasada hasta esta hora "
+                                      f"({r['ingresos_semana_anterior']} ingresos).")
+            self.variacion.show()
+        self.kpi_activos.mostrar(r['socios_activos'])
+        self.kpi_vencen.mostrar(r['vencen_hoy'])
+        self.kpi_vencen.setToolTip('Membresías cuyo período termina hoy: desde hoy ya no habilitan el ingreso.')
+        self._mostrados = None
+        self._pintar_accesos()
+        self.estado_camara_ui()
+
+    def _filas_que_entran(self):
+        return max(1, (self.accesos.height() - 84) // FilaAcceso.ALTO)
+
+    def _pintar_accesos(self):
+        accesos = self._accesos[:self._filas_que_entran()]
+        clave = [a['id'] for a in accesos]
+        if clave == self._mostrados:
+            return
+        self._mostrados = clave
+        while self.lista_accesos.count():
+            w = self.lista_accesos.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        if not accesos:
+            vacio = etiqueta('Todavía no hay ingresos registrados.', 'vacio')
+            vacio.setAlignment(Qt.AlignCenter)
+            vacio.setMinimumHeight(80)
+            self.lista_accesos.addWidget(vacio)
+        for a in accesos:
+            self.lista_accesos.addWidget(FilaAcceso(a, self.v.foto(a['socio_id'])))
+
+    def eventFilter(self, objeto, evento):
+        if objeto is self.accesos and evento.type() == QEvent.Resize and self._accesos:
+            QTimer.singleShot(0, self._pintar_accesos)
+        return super().eventFilter(objeto, evento)
+
+    def estado_camara_ui(self):
+        abierta = bool(self.v.camera.esta_abierta())
+        self.estado_camara.fijar('●  Activa' if abierta else '●  Inactiva', 'lima' if abierta else 'gris')
+        self.kpi_camara.circulo.cambiar('videocam' if abierta else 'videocamOff', tema.LIMA if abierta else tema.TENUE)
+        origen = self.v.camera.indice
+        texto = f'Webcam {origen}' if isinstance(origen, int) else f'Origen: {Path(str(origen)).name or origen}'
+        self.kpi_camara.detalle.setText(texto)
+        self.kpi_camara.detalle.setToolTip(str(origen))
+        self.kpi_camara.detalle.show()
+        if abierta and self.v.listo:
+            self.en_vivo.fijar('●  Transmisión en vivo', 'lima')
+        elif abierta:
+            self.en_vivo.fijar('●  Preparando', 'ambar')
+        else:
+            self.en_vivo.fijar('●  Sin transmisión', 'gris')
+        self.detener.setEnabled(abierta)
+
 
 class VentanaGimnasio(QMainWindow):
     def __init__(self):
         super().__init__()
+        tema.cargar_fuentes()
         self.setWindowTitle('PULSO GYM | Acceso facial')
-        self.resize(1200,800); self.setMinimumSize(1000,700)
-        self.setStyleSheet(ESTILO)
-        self.camera=CameraManager(int(os.getenv('CAMERA_INDEX','0')))
-        self.motor=TrabajadorReconocimiento()
+        self.setWindowIcon(iconos.icono('pulso', tema.LIMA))
+        self.resize(1480, 900)
+        self.setMinimumSize(1360, 780)
+        self.setStyleSheet(tema.ESTILO)
+        self.camera = CameraManager(origen_camara())
+        self.motor = TrabajadorReconocimiento()
         self.motor.terminado.connect(self.resultado)
-        self.motor.progreso.connect(lambda s:self.estado.setText(s))
+        self.motor.progreso.connect(lambda s: self.estado.setText(s))
         self.motor.detenido.connect(self.finalizar_cierre)
-        self.detector=cv2.CascadeClassifier(cv2.data.haarcascades+'haarcascade_frontalface_default.xml')
-        self.ocupado=False; self.listo=False; self.modal=False; self.cerrando=False
-        self.sesion=0; self.cancelacion=Event(); self.proximo=0; self.ultimo_socio={}
-        contenedor=QWidget(); self.setCentralWidget(contenedor); base=QHBoxLayout(contenedor)
-        lateral=QVBoxLayout(); marca=QLabel('PULSO\nGYM'); marca.setObjectName('marca')
-        lateral.addWidget(marca); lateral.addWidget(QLabel('RECEPCIÓN · ACCESO FACIAL'))
-        self.paginas=QStackedWidget()
-        for i,n in enumerate(['01  Acceso facial','02  Socios','03  Membresías y pagos','04  Horarios','05  Informes']):
-            lateral.addWidget(boton(n,lambda checked=False,idx=i:self.ir(idx)))
-        lateral.addStretch(); lateral.addWidget(QLabel('Trabajo final · Contexto B'))
-        base.addLayout(lateral,1); base.addWidget(self.paginas,5)
-        self.pagina_acceso(); self.pagina_socios(); self.pagina_membresias(); self.pagina_horarios(); self.pagina_informes()
-        self.timer=QTimer(self); self.timer.timeout.connect(self.frame); self.timer.start(40)
+        self.detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        self.ocupado = False; self.listo = False; self.modal = False; self.cerrando = False
+        self.sesion = 0; self.cancelacion = Event(); self.proximo = 0; self.ultimo_socio = {}
+        self.pendiente = None
+        self.fotos = {}
+        self._construir()
+        self.timer = QTimer(self); self.timer.timeout.connect(self.frame); self.timer.start(40)
+        self.reloj = QTimer(self); self.reloj.timeout.connect(self.tic); self.reloj.start(1000)
+        self.tablero = QTimer(self); self.tablero.timeout.connect(self.refrescar_tablero); self.tablero.start(30000)
+        self.expira = QTimer(self); self.expira.setSingleShot(True)
+        self.expira.timeout.connect(lambda: self.cancelar('Tiempo de confirmación agotado. No se registró el ingreso.'))
+        self.descanso = QTimer(self); self.descanso.setSingleShot(True)
+        self.descanso.timeout.connect(lambda: None if self.modal else self.acceso.panel_espera())
+        QShortcut(QKeySequence(Qt.Key_Return), self, lambda: self.intentar(self.confirmar) if self.modal else None)
+        QShortcut(QKeySequence(Qt.Key_Enter), self, lambda: self.intentar(self.confirmar) if self.modal else None)
+        QShortcut(QKeySequence(Qt.Key_Escape), self, lambda: self.cancelar() if self.modal else None)
+        self.tic()
+        QTimer.singleShot(0, self.refrescar_tablero)
 
-    def pagina(self,titulo,ayuda):
-        w=QWidget(); l=QVBoxLayout(w)
-        h=QLabel(titulo); h.setObjectName('titulo'); l.addWidget(h)
-        a=QLabel(ayuda); a.setWordWrap(True); a.setObjectName('ayuda'); l.addWidget(a)
-        self.paginas.addWidget(w)
-        return l
+    # ---------- estructura ----------
+    def _construir(self):
+        from src.ui.paginas import PaginaHorarios, PaginaInformes, PaginaMembresias, PaginaSocios
+        raiz = QWidget(); raiz.setObjectName('raiz'); self.setCentralWidget(raiz)
+        base = QHBoxLayout(raiz); base.setContentsMargins(0, 0, 0, 0); base.setSpacing(0)
+        lateral = QWidget(); lateral.setObjectName('lateral'); lateral.setFixedWidth(268)
+        lat = QVBoxLayout(lateral); lat.setContentsMargins(16, 30, 16, 20); lat.setSpacing(10)
+        lat.addWidget(Logo()); lat.addSpacing(34)
+        self.navegacion = []
+        for i, (texto, icono) in enumerate([('Acceso facial', 'acceso'), ('Socios', 'socios'),
+                                            ('Membresías y pagos', 'membresias'), ('Horarios y cupos', 'horarios'),
+                                            ('Informes', 'informes')]):
+            b = QPushButton('   ' + texto); b.setObjectName('nav'); b.setCheckable(True); b.setCursor(Qt.PointingHandCursor)
+            b.setIcon(iconos.icono(icono, '#C9D3DF', '#0A1404')); b.setIconSize(QSize(22, 22))
+            b.clicked.connect(lambda _=False, idx=i: self.ir(idx))
+            lat.addWidget(b); self.navegacion.append(b)
+        lat.addStretch()
+        lat.addWidget(separador()); lat.addSpacing(6)
+        usuario = QToolButton(); usuario.setObjectName('usuario'); usuario.setText('  Recepción')
+        usuario.setIcon(iconos.icono('usuario', tema.TEXTO)); usuario.setIconSize(QSize(26, 26))
+        usuario.setToolButtonStyle(Qt.ToolButtonTextBesideIcon); usuario.setPopupMode(QToolButton.InstantPopup)
+        usuario.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed); usuario.setCursor(Qt.PointingHandCursor)
+        menu = QMenu(usuario)
+        menu.addAction(iconos.icono('ajustes'), 'Configuración de cámara', self.configurar_camara)
+        menu.addAction(iconos.icono('actualizar'), 'Recargar fotografías de socios', self.iniciar)
+        menu.addAction(iconos.icono('base'), 'Estado de la base de datos', lambda: self.intentar(self.diagnostico))
+        menu.addAction(iconos.icono('info'), 'Acerca de PULSO GYM', self.acerca)
+        menu.addSeparator()
+        menu.addAction(iconos.icono('salir'), 'Salir', self.close)
+        usuario.setMenu(menu)
+        lat.addWidget(usuario)
+        base.addWidget(lateral)
 
-    def intentar(self,funcion):
-        try: return funcion()
+        contenido = QWidget(); col = QVBoxLayout(contenido); col.setContentsMargins(34, 26, 34, 26); col.setSpacing(20)
+        cabecera = QHBoxLayout(); textos = QVBoxLayout(); textos.setSpacing(4)
+        eyebrow = QHBoxLayout(); barra = QFrame(); barra.setFixedSize(26, 4)
+        barra.setStyleSheet(f'background:{tema.LIMA}; border-radius:2px;')
+        self.eyebrow = etiqueta('', 'eyebrow'); eyebrow.addWidget(barra, 0, Qt.AlignVCenter); eyebrow.addSpacing(8)
+        eyebrow.addWidget(self.eyebrow); eyebrow.addStretch(); textos.addLayout(eyebrow)
+        self.titulo = etiqueta('', 'titulo'); self.subtitulo = etiqueta('', 'subtitulo', ajuste=True)
+        textos.addWidget(self.titulo); textos.addWidget(self.subtitulo)
+        cabecera.addLayout(textos, 1)
+        fecha_ic = QLabel(); fecha_ic.setPixmap(iconos.pixmap('calendario', '#C9D3DF', 20))
+        reloj_ic = QLabel(); reloj_ic.setPixmap(iconos.pixmap('reloj', '#C9D3DF', 20))
+        self.fecha = etiqueta('', 'fecha'); self.hora = etiqueta('', 'fecha')
+        for w in (fecha_ic, self.fecha):
+            cabecera.addWidget(w, 0, Qt.AlignTop)
+        cabecera.addSpacing(18); sep = separador(True); sep.setFixedHeight(26); cabecera.addWidget(sep, 0, Qt.AlignTop)
+        cabecera.addSpacing(18)
+        for w in (reloj_ic, self.hora):
+            cabecera.addWidget(w, 0, Qt.AlignTop)
+        col.addLayout(cabecera)
+        self.estado = TextoEstado('Abrí la cámara para comenzar.')
+        self.estado.hide()
+        self.paginas = QStackedWidget()
+        self.acceso = PaginaAcceso(self)
+        for pagina in (self.acceso, PaginaSocios(self), PaginaMembresias(self), PaginaHorarios(self), PaginaInformes(self)):
+            self.paginas.addWidget(pagina)
+        col.addWidget(self.paginas, 1)
+        base.addWidget(contenido, 1)
+        self.estado.cambio.connect(self._estado_en_video)
+        self._mostrar_cabecera(0)
+
+    def _mostrar_cabecera(self, indice):
+        p = self.paginas.widget(indice)
+        self.eyebrow.setText(p.eyebrow); self.titulo.setText(p.titulo); self.subtitulo.setText(p.subtitulo)
+        for i, b in enumerate(self.navegacion):
+            b.setChecked(i == indice)
+        self.setWindowTitle(f"PULSO GYM | {self.navegacion[indice].text().strip()}")
+
+    def _estado_en_video(self, texto):
+        tono = 'gris'
+        if any(t in texto for t in ('No se pudo', 'Error', 'no confirmada', 'No hay fotos', 'agotado', 'Ubique')):
+            tono = 'ambar'
+        elif self.listo:
+            tono = 'lima'
+        titulo = ('Cámara apagada' if not self.camera.esta_abierta() else
+                  'Rostro detectado' if self.ocupado and self.listo else 'Reconocimiento activo' if self.listo else 'Preparando')
+        if self.ocupado and self.listo:
+            texto = 'Analizando identidad…'
+        self.acceso.video.estado(titulo, texto, tono)
+
+    def tic(self):
+        ahora = ahora_local()
+        self.fecha.setText(fmt.fecha_larga(ahora.date()))
+        self.hora.setText(f'{ahora:%H:%M}')
+
+    def intentar(self, funcion):
+        try:
+            return funcion()
         except Exception as e:
-            print(type(e).__name__,str(e))
-            mensaje=str(e) if isinstance(e,ValueError) else 'No se pudo completar la operación. Revise la conexión y los datos (DNI único). Detalle en la terminal.'
-            QMessageBox.warning(self,'Operación no completada',mensaje)
+            print(type(e).__name__, str(e))
+            mensaje = str(e) if isinstance(e, ValueError) else 'No se pudo completar la operación. Revise la conexión con la base de datos y los datos ingresados. Detalle en la terminal.'
+            QMessageBox.warning(self, 'Operación no completada', mensaje)
             return None
 
-    def ir(self,indice):
-        self.sesion+=1; self.cancelacion.set(); self.paginas.setCurrentIndex(indice)
-        if indice==1: self.intentar(self.refrescar_socios)
-        if indice==2: self.intentar(self.refrescar_membresias)
-        if indice==3: self.intentar(self.refrescar_horarios)
-        if indice==4: self.intentar(self.consultar_informes)
+    def ir(self, indice, **opciones):
+        if self.modal and indice != 0:
+            self.cancelar('Ingreso cancelado al cambiar de sección.')
+        self.sesion += 1; self.cancelacion.set()
+        self.paginas.setCurrentIndex(indice); self._mostrar_cabecera(indice)
+        pagina = self.paginas.widget(indice)
+        if indice == 0:
+            self.acceso.refrescar(silencioso=True)
+        else:
+            self.intentar(lambda: pagina.refrescar(**opciones))
 
-    def pagina_acceso(self):
-        l=self.pagina('Tu entrenamiento empieza acá','Mirá a la cámara. Revisá tu nombre y confirmá el ingreso con OK.')
-        self.video=QLabel('Cámara apagada'); self.video.setAlignment(Qt.AlignCenter)
-        self.video.setMinimumSize(620,390); self.video.setStyleSheet('background:#080f19; border:2px solid #36536e; border-radius:12px;')
-        l.addWidget(self.video,1)
-        self.estado=QLabel('Abrí la cámara para comenzar.'); self.estado.setWordWrap(True); l.addWidget(self.estado)
-        fila=QHBoxLayout(); self.abrir=boton('Abrir / recargar cámara',self.iniciar,True)
-        fila.addWidget(self.abrir); fila.addWidget(boton('Cerrar cámara',self.cerrar_camara)); l.addLayout(fila)
+    def refrescar_tablero(self):
+        if self.paginas.currentIndex() == 0:
+            self.acceso.refrescar(silencioso=True)
 
+    def foto(self, socio_id):
+        if socio_id not in self.fotos:
+            try:
+                self.fotos[socio_id] = db.foto_socio(socio_id)
+            except Exception as e:
+                print(type(e).__name__, str(e))
+                return None
+        return self.fotos[socio_id]
+
+    def fotos_modificadas(self, socio_id=None):
+        """Tras un alta o un cambio de fotografías hay que recargar las referencias faciales."""
+        self.fotos.pop(socio_id, None)
+        if self.listo:
+            self.listo = False
+            self.estado.setText('Hay fotografías nuevas: presione «Abrir cámara» para recargarlas.')
+
+    # ---------- cámara y reconocimiento ----------
     def iniciar(self):
         if self.ocupado: return
+        if self.modal: self.cancelar()
+        if self.paginas.currentIndex() != 0: self.ir(0)
         if not self.camera.abrir():
-            self.camera.cerrar(); self.estado.setText('No se pudo abrir la webcam. Revise permisos y CAMERA_INDEX.'); return
-        self.sesion+=1; self.listo=False; self.ultimo_socio.clear()
+            self.camera.cerrar(); self.estado.setText('No se pudo abrir la webcam. Revise permisos o elija otra en Configuración de cámara.')
+            self.acceso.estado_camara_ui(); return
+        self.sesion += 1; self.listo = False; self.ultimo_socio.clear()
         self.estado.setText('Preparando FaceNet512 y fotografías de socios…')
+        self.acceso.estado_camara_ui()
         self.enviar('preparar')
 
-    def enviar(self,tipo,frame=None,rostros=None):
-        self.ocupado=True; self.abrir.setEnabled(False); self.cancelacion=Event()
-        self.motor.ejecutar(dict(tipo=tipo,sesion=self.sesion,cancelacion=self.cancelacion,
-                                frame=frame,rostros=rostros))
+    def enviar(self, tipo, frame=None, rostros=None):
+        self.ocupado = True; self.acceso.abrir.setEnabled(False); self.cancelacion = Event()
+        self.motor.ejecutar(dict(tipo=tipo, sesion=self.sesion, cancelacion=self.cancelacion,
+                                 frame=frame, rostros=rostros))
+        if tipo == 'reconocer':
+            self._estado_en_video('Analizando identidad…')
 
     def cerrar_camara(self):
-        self.sesion+=1; self.cancelacion.set(); self.listo=False
-        self.camera.cerrar(); self.video.clear(); self.video.setText('Cámara apagada')
+        if self.modal: self.cancelar()
+        self.sesion += 1; self.cancelacion.set(); self.listo = False
+        self.camera.cerrar(); self.acceso.video.limpiar()
         self.estado.setText('Reconocimiento detenido.')
+        self.acceso.estado_camara_ui()
+
+    def configurar_camara(self):
+        from src.ui.dialogos import DialogoCamara
+        dialogo = DialogoCamara(self, self.camera.indice)
+        if dialogo.exec():
+            origen, guardar = dialogo.resultado()
+            if guardar:
+                QSettings('PULSO GYM', 'Recepcion').setValue('camara/origen', str(origen))
+            estaba = self.camera.esta_abierta()
+            self.cerrar_camara()
+            self.camera.indice = CameraManager(origen).indice
+            self.estado.setText(f'Cámara configurada: {self.camera.indice}.')
+            if estaba: self.iniciar()
+            self.acceso.estado_camara_ui()
 
     def frame(self):
-        if self.cerrando or not self.camera.esta_abierta() or self.paginas.currentIndex()!=0: return
-        imagen=self.camera.leer_frame()
+        if self.cerrando or not self.camera.esta_abierta() or self.paginas.currentIndex() != 0: return
+        imagen = self.camera.leer_frame()
         if imagen is None:
-            self.sesion+=1; self.cancelacion.set()
+            self.sesion += 1; self.cancelacion.set()
             if not self.modal: self.estado.setText('No se pudo leer la cámara.')
             return
-        imagen=cv2.flip(imagen,1)
-        # Durante el modal sólo se actualiza el video; no se lanzan nuevas inferencias.
+        imagen = cv2.flip(imagen, 1)
+        escala = min(1, 640 / max(imagen.shape[:2]))
+        pequena = cv2.resize(imagen, None, fx=escala, fy=escala)
+        caras = self.detector.detectMultiScale(cv2.cvtColor(pequena, cv2.COLOR_BGR2GRAY), 1.1, 5, minSize=(60, 60))
+        if len(caras): caras = (caras / escala).round().astype(int)
+        # Mientras se espera la confirmación solo se dibuja el marco; no se lanzan nuevas inferencias.
         if not self.modal:
-            escala=min(1,640/max(imagen.shape[:2]))
-            pequena=cv2.resize(imagen,None,fx=escala,fy=escala)
-            caras=self.detector.detectMultiScale(cv2.cvtColor(pequena,cv2.COLOR_BGR2GRAY),1.1,5,minSize=(60,60))
-            if len(caras): caras=(caras/escala).round().astype(int)
-            if len(caras)!=1:
-                self.sesion+=1; self.cancelacion.set()
-                if self.listo: self.estado.setText('Ubique un solo rostro.' if len(caras)>1 else 'Mirá a la cámara.')
-            elif self.listo and not self.ocupado and monotonic()>=self.proximo:
-                self.enviar('reconocer',imagen.copy(),caras.copy())
-            for x,y,w,h in caras: cv2.rectangle(imagen,(x,y),(x+w,y+h),(74,243,184),2)
-        rgb=cv2.cvtColor(imagen,cv2.COLOR_BGR2RGB); h,w=rgb.shape[:2]
-        q=QImage(rgb.data,w,h,rgb.strides[0],QImage.Format_RGB888).copy()
-        self.video.setPixmap(QPixmap.fromImage(q).scaled(self.video.size(),Qt.KeepAspectRatio,Qt.SmoothTransformation))
+            if len(caras) != 1:
+                self.sesion += 1; self.cancelacion.set()
+                if self.listo: self.estado.setText('Ubique un solo rostro.' if len(caras) > 1 else 'Mirá a la cámara.')
+            elif self.listo and not self.ocupado and monotonic() >= self.proximo:
+                self.enviar('reconocer', imagen.copy(), caras.copy())
+        rgb = cv2.cvtColor(imagen, cv2.COLOR_BGR2RGB); h, w = rgb.shape[:2]
+        q = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).copy()
+        self.acceso.video.mostrar(q, [tuple(c) for c in caras])
 
-    def resultado(self,r):
-        self.ocupado=False; self.abrir.setEnabled(True); self.proximo=monotonic()+2
+    def resultado(self, r):
+        self.ocupado = False; self.acceso.abrir.setEnabled(True); self.proximo = monotonic() + 2
         if self.cerrando: return
-        if r['tipo']=='preparar':
-            self.listo=not r.get('error') and r.get('cantidad',0)>0 and self.camera.esta_abierta()
-            self.estado.setText('Listo: mirá a la cámara.' if self.listo else r.get('mensaje','No hay fotos válidas. Registre un socio y recargue la cámara.'))
+        if r['tipo'] == 'preparar':
+            self.listo = not r.get('error') and r.get('cantidad', 0) > 0 and self.camera.esta_abierta()
+            self.estado.setText('Listo: mirá a la cámara.' if self.listo else r.get('mensaje', 'No hay fotos válidas. Registre un socio y recargue la cámara.'))
+            self.acceso.estado_camara_ui()
             return
-        if r['sesion']!=self.sesion or not self.camera.esta_abierta() or self.paginas.currentIndex()!=0: return
+        if r['sesion'] != self.sesion or not self.camera.esta_abierta() or self.paginas.currentIndex() != 0: return
         if r.get('error'):
-            if r.get('reiniciar'): self.listo=False
-            self.estado.setText(r.get('mensaje','Error facial. Vuelva a abrir la cámara.')); return
-        identidad=r['resultado']
-        if identidad['estado']!='reconocido':
+            if r.get('reiniciar'): self.listo = False
+            self.estado.setText(r.get('mensaje', 'Error facial. Vuelva a abrir la cámara.')); return
+        identidad = r['resultado']
+        if identidad['estado'] != 'reconocido':
             self.estado.setText('Identidad no confirmada. No se registró ningún ingreso.'); return
-        sid=identidad['socio_id']
-        if monotonic()<self.ultimo_socio.get(sid,0): return
-        self.ultimo_socio[sid]=monotonic()+10
-        self.intentar(lambda:self.proponer(sid))
+        sid = identidad['socio_id']
+        if monotonic() < self.ultimo_socio.get(sid, 0): return
+        self.ultimo_socio[sid] = monotonic() + 10
+        self.intentar(lambda: self.proponer(sid))
 
-    def proponer(self,sid):
+    def proponer(self, sid):
         # Sin escrituras en este tramo: Cancelar conserva la base intacta.
-        estado=db.consultar_acceso(sid); d=estado['decision']; socio=estado['socio']
-        nombre=f"{socio['nombre']} {socio['apellido']}" if socio else 'Socio no válido'
+        estado = db.consultar_acceso(sid); d = estado['decision']; socio = estado['socio']
+        nombre = f"{socio['nombre']} {socio['apellido']}" if socio else 'Socio no válido'
+        self.descanso.stop()
+        foto = self.foto(sid) if socio else None
         if not d.permitido:
-            self.estado.setText(f'{nombre}: {d.motivo}'); return
-        m=estado['membresia']; self.modal=True
+            self.acceso.panel_socio(estado, foto, 'rojo', d.motivo)
+            self.estado.setText(f'{nombre}: {d.motivo}')
+            self.descanso.start(DESCANSO_RESULTADO_MS)
+            return
+        m = estado['membresia']
+        self.modal = True
+        self.pendiente = dict(socio_id=sid, membresia_id=m['id'], solicitud=uuid4(), nombre=nombre,
+                             membresia=m, restantes=d.restantes)
+        self.acceso.panel_socio(estado, foto, 'lima', 'Verifique la identidad y confirme el ingreso.')
+        self.acceso.confirmar.setEnabled(True); self.acceso.cancelar.setEnabled(True)
+        self.acceso.confirmar.setFocus()
+        self.estado.setText(f'{nombre}: esperando confirmación.')
+        self.expira.start(ESPERA_CONFIRMACION_MS)
+
+    def _liberar(self, sid):
+        self.modal = False; self.pendiente = None; self.expira.stop()
+        self.proximo = monotonic() + 3; self.ultimo_socio[sid] = monotonic() + 10
+        self.acceso.confirmar.setEnabled(False); self.acceso.cancelar.setEnabled(False)
+        self.descanso.start(DESCANSO_RESULTADO_MS)
+
+    def confirmar(self):
+        if not self.modal or not self.pendiente: return
+        p = self.pendiente
+        self.acceso.confirmar.setEnabled(False)
         try:
-            texto=(f"{nombre} · DNI {socio['dni']}\n\nRegistrar INGRESO al gimnasio\n"
-                   f"Plan: {m['plan']}\nVence: {m['vence'].strftime('%d/%m/%Y')} (día no incluido)\n")
-            if d.restantes is not None: texto+=f'Entrenamientos disponibles antes de ingresar: {d.restantes}\n'
-            respuesta=QMessageBox.question(self,'Confirmar ingreso',texto,QMessageBox.Ok|QMessageBox.Cancel,QMessageBox.Cancel)
-            if respuesta==QMessageBox.Ok:
-                ok,mensaje=db.confirmar_ingreso(sid,m['id'],uuid4())
-                self.estado.setText(f'{nombre}: {mensaje}')
-            else:
-                self.estado.setText(f'{nombre}: cancelado. No se registró el ingreso.')
+            ok, mensaje = db.confirmar_ingreso(p['socio_id'], p['membresia_id'], p['solicitud'])
         finally:
-            self.modal=False; self.proximo=monotonic()+3; self.ultimo_socio[sid]=monotonic()+10
+            self._liberar(p['socio_id'])
+        self.estado.setText(f"{p['nombre']}: {mensaje}")
+        self.acceso.mensaje.setText(f'{mensaje} · {ahora_local():%H:%M}' if ok else mensaje)
+        self.acceso.mensaje.setStyleSheet(f"color:{tema.LIMA if ok else tema.ROJO}; font-weight:600;")
+        self.acceso.mensaje.show()
+        if ok and p['membresia'].get('cupo') and p['restantes'] is not None:
+            self.acceso.restantes.setText(fmt.texto_restantes(p['membresia'], p['restantes'] - 1))
+        if not ok:
+            self.acceso._panel('rojo', 'Acceso no habilitado', 'xCirculo', tema.ROJO)
+        self.acceso.refrescar(silencioso=True)
 
-    def pagina_socios(self):
-        l=self.pagina('Socios','Alta con tres fotografías. Use una sola persona, buena iluminación y un giro leve para las vistas laterales.')
-        l.addWidget(boton('Registrar nuevo socio',lambda:self.intentar(self.nuevo_socio),True))
-        self.socios_tabla=tabla(['ID','Apellido','Nombre','DNI','Estado']); l.addWidget(self.socios_tabla)
-        l.addWidget(boton('Activar / desactivar seleccionado',lambda:self.intentar(self.alternar_socio)))
+    def cancelar(self, motivo='Cancelado. No se registró el ingreso.'):
+        if not self.modal or not self.pendiente: return
+        p = self.pendiente
+        self._liberar(p['socio_id'])
+        self.estado.setText(f"{p['nombre']}: {motivo}")
+        self.acceso.mensaje.setText(motivo)
+        self.acceso.mensaje.setStyleSheet(f'color:{tema.TENUE}; font-weight:600;')
+        self.acceso.mensaje.show()
+        self.acceso._panel(None, 'Ingreso cancelado', 'xCirculo', tema.TENUE)
 
-    def refrescar_socios(self):
-        self.socios=db.listar_socios()
-        llenar(self.socios_tabla,[(s['id'],s['apellido'],s['nombre'],s['dni'],'Activo' if s['activo'] else 'Inactivo') for s in self.socios])
+    # ---------- menú ----------
+    def diagnostico(self):
+        d = db.diagnostico()
+        QMessageBox.information(self, 'Estado de la base de datos',
+                                f"Conexión correcta con «{d['base']}» (PostgreSQL {d['version']}).\n\n"
+                                f"Socios: {d['socios']}\nMembresías registradas: {d['membresias']}\nIngresos registrados: {d['ingresos']}")
 
-    def alternar_socio(self):
-        i=self.socios_tabla.currentRow()
-        if i<0: raise ValueError('Seleccione un socio.')
-        s=self.socios[i]
-        if QMessageBox.question(self,'Estado del socio',f"¿Cambiar el estado de {s['nombre']} {s['apellido']}?",QMessageBox.Yes|QMessageBox.No)==QMessageBox.Yes:
-            db.cambiar_estado(s['id'],not s['activo']); self.refrescar_socios()
+    def acerca(self):
+        QMessageBox.about(self, 'Acerca de PULSO GYM',
+                          '<b>PULSO GYM</b> · Gestión integral del gimnasio<br><br>'
+                          'Python · PySide6 · PostgreSQL · FaceNet512 (DeepFace) · OpenCV<br><br>'
+                          'Las fotografías y los datos personales se guardan solo en la base local. '
+                          'El reconocimiento nunca registra un ingreso sin la confirmación de recepción.')
 
-    def nuevo_socio(self):
-        dialogo=QDialog(self); dialogo.setWindowTitle('Alta de socio'); dialogo.resize(620,560)
-        l=QVBoxLayout(dialogo); f=QFormLayout(); campos={}; fotos={}
-        for clave,etiqueta in [('nombre','Nombre *'),('apellido','Apellido *'),('dni','DNI *'),('celular','Celular'),('correo_electronico','Correo')]:
-            campos[clave]=QLineEdit(); f.addRow(etiqueta,campos[clave])
-        l.addLayout(f)
-        ayuda=QLabel('Fotografías: se verificará que cada imagen contenga exactamente un rostro.'); ayuda.setWordWrap(True); l.addWidget(ayuda)
-        def recibir(angulo,datos,label):
-            img=cv2.imdecode(np.frombuffer(datos,np.uint8),cv2.IMREAD_COLOR)
-            if img is None: raise ValueError('Imagen ilegible.')
-            escala=min(1,1000/max(img.shape[:2])); img=cv2.resize(img,None,fx=escala,fy=escala)
-            caras=self.detector.detectMultiScale(cv2.cvtColor(img,cv2.COLOR_BGR2GRAY),1.1,5,minSize=(80,80))
-            if len(caras)!=1: raise ValueError('La foto debe mostrar exactamente un rostro. Use un giro leve, no un perfil completo.')
-            ok,png=cv2.imencode('.png',img)
-            if not ok: raise ValueError('No se pudo convertir la fotografía.')
-            fotos[angulo]=png.tobytes(); label.setText(angulo.capitalize()+' · lista')
-        def cargar(a,label):
-            ruta,_=QFileDialog.getOpenFileName(dialogo,'Fotografía','','Imágenes (*.jpg *.jpeg *.png *.bmp)')
-            if ruta:
-                from pathlib import Path
-                if Path(ruta).stat().st_size>15_000_000: raise ValueError('Use una imagen menor a 15 MB.')
-                recibir(a,Path(ruta).read_bytes(),label)
-        def capturar(a,label):
-            captura=CapturaFotoDialog(dialogo,self.camera)
-            captura.foto_capturada.connect(lambda datos:self.intentar(lambda:recibir(a,datos,label)))
-            captura.exec()
-        for angulo in ['frontal','izquierdo','derecho']:
-            fila=QHBoxLayout(); etiqueta=QLabel(angulo.capitalize()+' · pendiente'); fila.addWidget(etiqueta)
-            fila.addWidget(boton('Archivo',lambda checked=False,a=angulo,e=etiqueta:self.intentar(lambda:cargar(a,e))))
-            fila.addWidget(boton('Cámara',lambda checked=False,a=angulo,e=etiqueta:self.intentar(lambda:capturar(a,e))))
-            l.addLayout(fila)
-        botones=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
-        botones.button(QDialogButtonBox.Save).setText('Guardar socio'); botones.button(QDialogButtonBox.Cancel).setText('Cancelar')
-        def guardar():
-            db.registrar_socio({k:v.text().strip() for k,v in campos.items()},fotos)
-            self.listo=False; dialogo.accept(); self.refrescar_socios()
-            QMessageBox.information(self,'Socio registrado','Socio guardado. Registre su pago en Membresías y recargue la cámara para reconocerlo.')
-        botones.accepted.connect(lambda:self.intentar(guardar)); botones.rejected.connect(dialogo.reject)
-        l.addWidget(botones); dialogo.exec()
-
-    def pagina_membresias(self):
-        l=self.pagina('Membresías y pagos','Cada pago inicia un mes desde hoy. Renovar anticipadamente reemplaza el período anterior y descarta el saldo sin usar.')
-        f=QFormLayout(); self.socio_pago=QComboBox(); self.plan_pago=QComboBox()
-        self.importe=QDoubleSpinBox(); self.importe.setRange(0,999999999); self.importe.setPrefix('$ ')
-        f.addRow('Socio',self.socio_pago); f.addRow('Plan',self.plan_pago); f.addRow('Importe abonado',self.importe)
-        l.addLayout(f); l.addWidget(boton('Registrar pago / renovar',lambda:self.intentar(self.pagar),True))
-        self.membresias_tabla=tabla(['Socio','DNI','Plan','Inicio','Vence','Usados','Restantes','Estado']); l.addWidget(self.membresias_tabla)
-
-    def refrescar_membresias(self):
-        self.socio_pago.clear(); self.plan_pago.clear()
-        for s in db.listar_socios():
-            if s['activo']: self.socio_pago.addItem(f"{s['apellido']}, {s['nombre']} · {s['dni']}",s['id'])
-        for p in db.planes(): self.plan_pago.addItem(p['nombre'],p['id'])
-        llenar(self.membresias_tabla,[(f"{s['apellido']}, {s['nombre']}",s['dni'],s['plan'],s['inicio'],s['vence'],s['usados'],
-                                     s['restantes'] if s['cupo'] else ('Sin cupo' if s['plan'] else '—'),s['estado']) for s in db.estado_membresias()])
-
-    def pagar(self):
-        sid=self.socio_pago.currentData()
-        if sid is None: raise ValueError('Registre o active un socio primero.')
-        if QMessageBox.question(self,'Confirmar pago',f"{self.socio_pago.currentText()}\n{self.plan_pago.currentText()} · $ {self.importe.value():.2f}\n\nEl nuevo período comienza hoy. Se pierde cualquier saldo anterior. ¿Continuar?",QMessageBox.Ok|QMessageBox.Cancel,QMessageBox.Cancel)==QMessageBox.Ok:
-            db.renovar(sid,self.plan_pago.currentData(),self.importe.value()); self.refrescar_membresias()
-            QMessageBox.information(self,'Pago registrado','Nueva membresía registrada por un mes calendario.')
-
-    def pagina_horarios(self):
-        l=self.pagina('Horarios de atención','Agregue varias franjas por día para turnos separados. Un día sin franjas se considera cerrado. El cierre no está incluido.')
-        fila=QHBoxLayout(); self.dia=QComboBox(); self.dia.addItems(DIAS)
-        self.desde_hora=QTimeEdit(QTime(7,0)); self.hasta_hora=QTimeEdit(QTime(22,0))
-        self.desde_hora.setDisplayFormat('HH:mm'); self.hasta_hora.setDisplayFormat('HH:mm')
-        for w in [self.dia,QLabel('Desde'),self.desde_hora,QLabel('Hasta'),self.hasta_hora]: fila.addWidget(w)
-        fila.addWidget(boton('Agregar',lambda:self.intentar(self.agregar_franja),True)); l.addLayout(fila)
-        self.horarios_tabla=tabla(['ID','Día','Apertura','Cierre']); l.addWidget(self.horarios_tabla)
-        l.addWidget(boton('Quitar franja seleccionada',lambda:self.intentar(self.quitar_franja)))
-
-    def refrescar_horarios(self):
-        self.franjas=db.horarios()
-        llenar(self.horarios_tabla,[(h['id'],DIAS[h['dia']],h['abre'],h['cierra']) for h in self.franjas])
-
-    def agregar_franja(self):
-        db.agregar_horario(self.dia.currentIndex(),self.desde_hora.time().toPython(),self.hasta_hora.time().toPython()); self.refrescar_horarios()
-
-    def quitar_franja(self):
-        i=self.horarios_tabla.currentRow()
-        if i<0: raise ValueError('Seleccione una franja.')
-        if QMessageBox.question(self,'Quitar horario','¿Quitar la franja seleccionada?',QMessageBox.Yes|QMessageBox.No)==QMessageBox.Yes:
-            db.quitar_horario(self.franjas[i]['id']); self.refrescar_horarios()
-
-    def pagina_informes(self):
-        l=self.pagina('Ingresos e informes','Consulte ingresos por fecha y socio. La exportación incluye el estado actual de las membresías.')
-        fila=QHBoxLayout(); self.desde_fecha=QDateEdit(QDate.currentDate().addDays(-30)); self.hasta_fecha=QDateEdit(QDate.currentDate())
-        for w in [self.desde_fecha,self.hasta_fecha]: w.setCalendarPopup(True); w.setDisplayFormat('dd/MM/yyyy')
-        self.filtro_socio=QComboBox(); self.filtro_socio.addItem('Todos los socios',None)
-        for w in [self.desde_fecha,self.hasta_fecha,self.filtro_socio]: fila.addWidget(w)
-        fila.addWidget(boton('Consultar',lambda:self.intentar(self.consultar_informes),True)); l.addLayout(fila)
-        self.informes_tabla=tabla(['Fecha / hora','Socio','DNI','Plan']); l.addWidget(self.informes_tabla)
-        l.addWidget(boton('Exportar Excel',lambda:self.intentar(lambda:self.exportar_informes('xlsx'))))
-        l.addWidget(boton('Exportar PDF',lambda:self.intentar(lambda:self.exportar_informes('pdf'))))
-
-    def consultar_informes(self):
-        elegido=self.filtro_socio.currentData(); self.filtro_socio.clear(); self.filtro_socio.addItem('Todos los socios',None)
-        for s in db.listar_socios(): self.filtro_socio.addItem(f"{s['apellido']}, {s['nombre']} · {s['dni']}",s['id'])
-        indice=self.filtro_socio.findData(elegido); self.filtro_socio.setCurrentIndex(max(0,indice))
-        self.filas_informe=db.informe(self.desde_fecha.date().toPython(),self.hasta_fecha.date().toPython(),self.filtro_socio.currentData())
-        llenar(self.informes_tabla,[(r['instante'].strftime('%d/%m/%Y %H:%M:%S'),f"{r['apellido']}, {r['nombre']}",r['dni'],r['plan']) for r in self.filas_informe])
-
-    def exportar_informes(self,extension):
-        self.consultar_informes()
-        ruta,_=QFileDialog.getSaveFileName(self,'Guardar informe','informe_gimnasio.'+extension,'Archivos (*.'+extension+')')
-        if not ruta: return
-        if not ruta.lower().endswith('.'+extension): ruta+='.'+extension
-        membresias=db.estado_membresias(); sid=self.filtro_socio.currentData()
-        if sid is not None: membresias=[m for m in membresias if m['id']==sid]
-        exportar(ruta,self.filas_informe,membresias,self.desde_fecha.date().toPython(),self.hasta_fecha.date().toPython())
-        QMessageBox.information(self,'Informe guardado',ruta)
-
-    def closeEvent(self,event):
+    def closeEvent(self, event):
         if not self.cerrando:
-            self.cerrando=True; self.timer.stop(); self.cerrar_camara()
+            self.cerrando = True; self.timer.stop(); self.cerrar_camara()
             self.motor.detener()
-        if self.motor.proceso is not None and self.motor.proceso.state()!=self.motor.proceso.NotRunning:
+        if self.motor.proceso is not None and self.motor.proceso.state() != QProcess.ProcessState.NotRunning:
             event.ignore()
         else: event.accept()
 
     def finalizar_cierre(self):
-        if self.cerrando: QTimer.singleShot(0,self.close)
+        if self.cerrando: QTimer.singleShot(0, self.close)
