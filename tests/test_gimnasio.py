@@ -100,6 +100,7 @@ class ConfirmacionTest(unittest.TestCase):
              patch.object(self.v.acceso,'refrescar'):
             self.v.confirmar(); self.v.confirmar(); self.v.acceso.confirmar.click()
         guardar.assert_called_once_with(1,5,solicitud); self.assertFalse(self.v.modal)
+        self.assertEqual(self.v.acceso.restantes.text(),'7 de 8')
 
     def test_expiracion_cancela_sin_persistir(self):
         self.proponer()

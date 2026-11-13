@@ -669,7 +669,8 @@ class VentanaGimnasio(QMainWindow):
             return
         m = estado['membresia']
         self.modal = True
-        self.pendiente = dict(socio_id=sid, membresia_id=m['id'], solicitud=uuid4(), nombre=nombre)
+        self.pendiente = dict(socio_id=sid, membresia_id=m['id'], solicitud=uuid4(), nombre=nombre,
+                             membresia=m, restantes=d.restantes)
         self.acceso.panel_socio(estado, foto, 'lima', 'Verifique la identidad y confirme el ingreso.')
         self.acceso.confirmar.setEnabled(True); self.acceso.cancelar.setEnabled(True)
         self.acceso.confirmar.setFocus()
@@ -694,6 +695,8 @@ class VentanaGimnasio(QMainWindow):
         self.acceso.mensaje.setText(f'{mensaje} · {ahora_local():%H:%M}' if ok else mensaje)
         self.acceso.mensaje.setStyleSheet(f"color:{tema.LIMA if ok else tema.ROJO}; font-weight:600;")
         self.acceso.mensaje.show()
+        if ok and p['membresia'].get('cupo') and p['restantes'] is not None:
+            self.acceso.restantes.setText(fmt.texto_restantes(p['membresia'], p['restantes'] - 1))
         if not ok:
             self.acceso._panel('rojo', 'Acceso no habilitado', 'xCirculo', tema.ROJO)
         self.acceso.refrescar(silencioso=True)
